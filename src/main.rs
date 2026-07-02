@@ -11,6 +11,7 @@
 //! `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
 //! last of which is the terminal `result`/`error`.
 
+mod auth;
 mod catalog;
 mod doctor;
 mod download;
@@ -57,6 +58,13 @@ enum Cmd {
     Install(InstallArgs),
     /// Show the resolved download ledger (endpoints, SAP codes, versions).
     Ledger,
+    /// Adobe sign-in via the device/QR flow (Collider drives this; --json streams
+    /// an auth_prompt event with the link+QR, then the result).
+    Auth {
+        /// Seconds to wait for the user to authorize (default 900).
+        #[arg(long, default_value_t = 900)]
+        timeout: u64,
+    },
 }
 
 #[derive(Args)]
@@ -114,6 +122,7 @@ fn main() -> ExitCode {
             acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
         }
         Cmd::Ledger => ledger::cmd_ledger(&em),
+        Cmd::Auth { timeout } => auth::cmd_auth(&em, timeout),
     };
 
     match result {
