@@ -13,9 +13,12 @@
 
 mod catalog;
 mod doctor;
+mod download;
 mod install;
+mod offline;
 mod output;
 mod source;
+mod windows;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -62,11 +65,13 @@ struct InstallArgs {
     #[arg(long)]
     suite: bool,
 
-    /// Ingestion method. Only `windows` (copy from a Windows install) is implemented in P1.
+    /// Ingestion method: how to acquire the app bits. All methods feed the same
+    /// stage->provision pipeline; they differ only in acquisition.
     #[arg(long, value_enum, default_value_t = Method::Windows)]
     method: Method,
 
-    /// Source root for the `windows` method (drive_c / mounted C: / copied tree).
+    /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
+    /// copied tree). For `offline`: the Adobe offline package / ISO.
     #[arg(long)]
     source: Option<PathBuf>,
 
@@ -83,10 +88,10 @@ struct InstallArgs {
 enum Method {
     /// Copy from an existing Windows install (implemented).
     Windows,
-    /// Extract from an Adobe offline package / ISO (P2, not yet implemented).
-    Iso,
-    /// Download from Adobe (P3, not yet implemented).
+    /// Download from Adobe (roadmap 1.3, not yet implemented).
     Download,
+    /// Extract from an Adobe offline package / ISO (roadmap 1.4, not yet implemented).
+    Offline,
 }
 
 fn main() -> ExitCode {
@@ -96,12 +101,15 @@ fn main() -> ExitCode {
     let result = match cli.cmd {
         Cmd::Doctor { prefix } => doctor::run(&em, prefix.as_deref()),
         Cmd::Apps { source } => catalog::cmd_apps(&em, source.as_deref()),
-        Cmd::Install(a) => match a.method {
-            Method::Windows => install::from_windows(&em, &a.prefix, a.source.as_deref(),
-                                                     a.app.as_deref(), a.suite, a.dry_run),
-            Method::Iso => Err(anyhow::anyhow!("--method iso is not implemented yet (P2)")),
-            Method::Download => Err(anyhow::anyhow!("--method download is not implemented yet (P3)")),
-        },
+        Cmd::Install(a) => {
+            // acquire (method-specific) -> stage + provision (shared pipeline).
+            let acq = match a.method {
+                Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite),
+                Method::Download => download::acquire(&em, a.app.as_deref(), a.suite),
+                Method::Offline => offline::acquire(&em, a.source.as_deref(), a.app.as_deref(), a.suite),
+            };
+            acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
+        }
     };
 
     match result {

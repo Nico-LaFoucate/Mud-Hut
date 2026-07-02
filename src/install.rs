@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-//! P1 ingestion: copy from an existing Windows install.
+//! The install pipeline: **acquire -> stage -> provision**.
 //!
-//! Discovers the app(s) + shared Adobe runtime in the source, stages them into
-//! `<prefix>/drive_c/...` preserving the Windows layout, then hands off to
-//! `neutron prefix provision` to make the prefix Neutron-ready. Idempotent
-//! (files already present with the same size are skipped) so a re-run repairs a
-//! partial copy rather than corrupting it.
+//! Every ingestion method (`windows`, `download`, `offline`) produces the same
+//! thing — an [`Acquisition`]: a base directory plus the set of source paths to
+//! copy into `<prefix>/drive_c/...`, preserving the Windows layout. This module
+//! owns the shared half — planning, staging (idempotent copy), and the handoff
+//! to `neutron prefix provision` — so the methods only differ in how they get
+//! the bits onto disk. Idempotent (files already present with the same size are
+//! skipped) so a re-run repairs a partial install rather than corrupting it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,9 +17,26 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use walkdir::WalkDir;
 
-use crate::catalog::{self, App};
 use crate::output::Emitter;
-use crate::source::Source;
+
+/// The product of the `acquire` step: bits on disk, ready to stage into a prefix.
+/// Methods build this differently (copy discovery / download+unpack / extract)
+/// but the [`run`] pipeline treats them identically.
+pub struct Acquisition {
+    /// Directory the item paths are relative to; `item_srcs` map to
+    /// `<prefix>/drive_c/<path relative to base>`.
+    pub base: PathBuf,
+    /// Absolute source paths (dirs or files) to stage under `drive_c`.
+    pub item_srcs: Vec<PathBuf>,
+    /// App ids being installed (for reporting / the result event).
+    pub app_ids: Vec<String>,
+    /// Human/JSON description of where the bits came from (source path, "Adobe
+    /// download", offline package path, ...).
+    pub source_desc: String,
+    /// A scratch dir (download/unpack or offline extraction) to remove once
+    /// staging is done. `None` for `windows` (it copies straight from the source).
+    pub scratch: Option<PathBuf>,
+}
 
 #[derive(Serialize)]
 struct PlanItem {
@@ -41,74 +60,59 @@ struct InstallResult {
     provisioned: bool,
 }
 
-pub fn from_windows(
-    em: &Emitter,
-    prefix: &Path,
-    source: Option<&Path>,
-    app: Option<&str>,
-    suite: bool,
-    dry_run: bool,
-) -> Result<()> {
-    let source = source.context("--source is required for --method windows")?;
-    let src = Source::discover(source)?;
+/// Stage an [`Acquisition`] into `prefix` and provision it. Shared by every
+/// ingestion method. Always removes the acquisition's scratch dir on the way
+/// out (success or failure).
+pub fn run(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Result<()> {
+    let scratch = acq.scratch.clone();
+    let r = run_inner(em, prefix, acq, dry_run);
+    if let Some(s) = scratch {
+        let _ = fs::remove_dir_all(&s);
+    }
+    r
+}
 
-    // Resolve the target apps.
-    let targets: Vec<(App, PathBuf)> = if suite {
-        catalog::apps()
-            .into_iter()
-            .filter_map(|a| src.app_dir(&a).map(|d| (a, d)))
-            .collect()
-    } else {
-        let id = app.context("provide an app id (e.g. photoshop) or pass --suite")?;
-        let a = catalog::find(id).with_context(|| format!("unknown app id: {id}"))?;
-        let dir = src
-            .app_dir(&a)
-            .with_context(|| format!("{} not found in {}", a.name, src.root().display()))?;
-        vec![(a, dir)]
-    };
-    if targets.is_empty() {
-        bail!("no matching Adobe apps found in {}", src.root().display());
+fn run_inner(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Result<()> {
+    if acq.item_srcs.is_empty() {
+        bail!("nothing to install (no items acquired)");
     }
 
-    // Build the staging plan: the app dir(s) + the shared runtime, de-duplicated.
-    let base = src.root().to_path_buf();
-    let mut item_srcs: Vec<PathBuf> = targets.iter().map(|(_, d)| d.clone()).collect();
-    item_srcs.extend(src.shared_paths());
-    item_srcs.sort();
-    item_srcs.dedup();
-
+    // Build the staging plan: each source path relative to the acquisition base.
     let mut items = Vec::new();
     let mut total_bytes = 0u64;
-    for s in &item_srcs {
-        let rel = s.strip_prefix(&base).unwrap_or(s);
+    for s in &acq.item_srcs {
+        let rel = s.strip_prefix(&acq.base).unwrap_or(s);
         let dst = prefix.join("drive_c").join(rel);
         let bytes = dir_size(s);
         total_bytes += bytes;
         items.push(PlanItem { rel: rel.display().to_string(), bytes, src: s.clone(), dst });
     }
 
-    let app_ids: Vec<String> = targets.iter().map(|(a, _)| a.id.to_string()).collect();
     em.note(&format!(
         "{} app(s): {} — {} item(s), {:.1} GiB from {}",
-        targets.len(),
-        app_ids.join(", "),
+        acq.app_ids.len(),
+        acq.app_ids.join(", "),
         items.len(),
         total_bytes as f64 / (1u64 << 30) as f64,
-        base.display()
+        acq.source_desc,
     ));
 
     if dry_run {
         for it in &items {
-            em.note(&format!("  would copy {:.2} GiB  {}", it.bytes as f64 / (1u64 << 30) as f64, it.rel));
+            em.note(&format!(
+                "  would copy {:.2} GiB  {}",
+                it.bytes as f64 / (1u64 << 30) as f64,
+                it.rel
+            ));
         }
         return finish(em, InstallResult {
             ok: true, dry_run: true, prefix: prefix.display().to_string(),
-            source: base.display().to_string(), apps: app_ids, items, total_bytes,
+            source: acq.source_desc, apps: acq.app_ids, items, total_bytes,
             provisioned: false,
         });
     }
 
-    // Real install. Stage into drive_c preserving the Windows layout.
+    // Stage into drive_c preserving the Windows layout.
     fs::create_dir_all(prefix.join("drive_c"))
         .with_context(|| format!("cannot create prefix at {}", prefix.display()))?;
 
@@ -127,7 +131,7 @@ pub fn from_windows(
 
     finish(em, InstallResult {
         ok: true, dry_run: false, prefix: prefix.display().to_string(),
-        source: base.display().to_string(), apps: app_ids, items, total_bytes,
+        source: acq.source_desc, apps: acq.app_ids, items, total_bytes,
         provisioned: true,
     })
 }
@@ -179,7 +183,8 @@ fn dir_size(root: &Path) -> u64 {
 }
 
 /// Recursively copy `src` -> `dst`, skipping files that already exist with the
-/// same size (idempotent), streaming byte-based progress under `label`.
+/// same size (idempotent), streaming byte-based progress under `label`. Handles
+/// `src` being a single file as well as a directory tree.
 fn copy_tree(
     src: &Path,
     dst: &Path,
@@ -192,7 +197,7 @@ fn copy_tree(
     for entry in WalkDir::new(src) {
         let entry = entry?;
         let rel = entry.path().strip_prefix(src).unwrap_or(entry.path());
-        let target = dst.join(rel);
+        let target = if rel.as_os_str().is_empty() { dst.to_path_buf() } else { dst.join(rel) };
         let ft = entry.file_type();
         if ft.is_dir() {
             fs::create_dir_all(&target)?;
