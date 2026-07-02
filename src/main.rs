@@ -58,12 +58,24 @@ enum Cmd {
     Install(InstallArgs),
     /// Show the resolved download ledger (endpoints, SAP codes, versions).
     Ledger,
-    /// Adobe sign-in via the device/QR flow (Collider drives this; --json streams
-    /// an auth_prompt event with the link+QR, then the result).
+    /// Adobe sign-in (device/QR flow). Collider drives these: `begin` once, then
+    /// `poll` every few seconds until the user has signed in.
     Auth {
-        /// Seconds to wait for the user to authorize (default 900).
-        #[arg(long, default_value_t = 900)]
-        timeout: u64,
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Mint the login link + QR. Returns { url, qr, request_id, device_id }.
+    Begin,
+    /// Poll once; runs the token exchange when sign-in completes.
+    Poll {
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        device_id: String,
     },
 }
 
@@ -122,7 +134,10 @@ fn main() -> ExitCode {
             acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
         }
         Cmd::Ledger => ledger::cmd_ledger(&em),
-        Cmd::Auth { timeout } => auth::cmd_auth(&em, timeout),
+        Cmd::Auth { action } => match action {
+            AuthAction::Begin => auth::cmd_begin(&em),
+            AuthAction::Poll { request_id, device_id } => auth::cmd_poll(&em, &request_id, &device_id),
+        },
     };
 
     match result {

@@ -62,15 +62,6 @@ impl Emitter {
         self.line(v);
     }
 
-    /// A tagged intermediate event carrying structured data (e.g. the auth prompt
-    /// with the sign-in URL + QR). JSON mode emits it verbatim; human mode is left
-    /// to the command to render.
-    pub fn event(&self, value: Value) {
-        if self.json {
-            self.line(value);
-        }
-    }
-
     /// The terminal failure event (called from main on Err).
     pub fn error(&self, message: &str) {
         if self.json {
