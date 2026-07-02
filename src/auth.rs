@@ -121,14 +121,48 @@ fn exchange(device_id: &str, code: &str) -> Result<Value> {
     );
     let agent = ureq::builder().redirects(0).build(); // capture the redirect, don't follow
     let call = agent.get(&url).set("User-Agent", "Creative Cloud").timeout(Duration::from_secs(30)).call();
-    let (http_status, location, body) = match call {
-        Ok(r) => (r.status(), r.header("location").map(String::from), r.into_string().unwrap_or_default()),
-        Err(ureq::Error::Status(c, r)) => (c, r.header("location").map(String::from), r.into_string().unwrap_or_default()),
+    let resp = match call {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r, // 302/4xx still carry the token cookies
         Err(e) => bail!("exchange request failed: {e}"),
     };
+    let http_status = resp.status();
+    let location = resp.header("location").map(String::from);
+    // The device_token is delivered in the redirect target's `client_redirect`
+    // query param (…?device_token=<JWT> or url-encoded %3D), NOT in the body/cookies.
+    let device_token = location.as_deref().and_then(|l| {
+        l.split("device_token").nth(1).map(|s| {
+            s.trim_start_matches("%3D")
+                .trim_start_matches('=')
+                .split('&')
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+    }).filter(|t| !t.is_empty());
+    // The device_token / access_token come back as Set-Cookie on this redirect,
+    // NOT in the body — capture every cookie + all headers verbatim for the handoff.
+    let set_cookie: Vec<String> = resp.all("set-cookie").iter().map(|s| s.to_string()).collect();
+    let headers: serde_json::Map<String, Value> = resp
+        .headers_names()
+        .into_iter()
+        .map(|name| {
+            let vals: Vec<String> = resp.all(&name).iter().map(|s| s.to_string()).collect();
+            let v = if vals.len() == 1 {
+                Value::String(vals[0].clone())
+            } else {
+                Value::Array(vals.into_iter().map(Value::String).collect())
+            };
+            (name, v)
+        })
+        .collect();
+    let body: String = resp.into_string().unwrap_or_default();
     Ok(json!({
         "http_status": http_status,
+        "device_token": device_token,
         "location": location,
+        "set_cookie": set_cookie,
+        "headers": headers,
         "body": body.chars().take(4000).collect::<String>(),
     }))
 }
