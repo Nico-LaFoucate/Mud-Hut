@@ -1,0 +1,8 @@
+Mud Hut
+Copyright 2026 The Mud Hut Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Mud Hut is an orchestrator only. It contains no Adobe code or assets and never
+ships, patches, or modifies Adobe binaries; users supply their own licensed
+Adobe installation.
