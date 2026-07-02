@@ -89,6 +89,11 @@ impl Source {
         if let Some(p) = find_child(&self.base, "ProgramData").and_then(|p| find_child(&p, "Adobe")) {
             out.push(p);
         }
+        // Installed fonts (Adobe Clean + the fonts Adobe requests). Without these,
+        // dwrite returns NULL -> AdobeOwl AV -> deadlock/crash on new-doc.
+        if let Some(p) = find_child(&self.base, "windows").and_then(|p| find_child(&p, "Fonts")) {
+            out.push(p);
+        }
         out
     }
 }
