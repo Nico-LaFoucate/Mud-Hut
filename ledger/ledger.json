@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "updated": "2026-07-02",
+  "note": "Mud Hut download ledger. Adobe endpoints, headers, and per-app SAP/version/platform live HERE (not compiled into the binary) so an Adobe API change is an edit to this file, not a rebuild. Published copy is fetched at runtime; the binary carries a bundled fallback copy of this same file.",
+
+  "endpoints": {
+    "products_feed": "https://cdn-ffc.oobesaas.adobe.com/core/v6/products/all?_type=xml&channel=ccm&channel=sti&channel=ccd&platform={platform}&productType=Desktop",
+    "application_manifest": "https://cdn-ffc.oobesaas.adobe.com/core/v6/applications/{sap}/{version}?platform={platform}",
+    "cdn_base": "https://ccmdls.adobe.com"
+  },
+
+  "headers": {
+    "X-Adobe-App-Id": "accc-hdcore-desktop",
+    "User-Agent": "Adobe Application Manager 2.0",
+    "X-Api-Key": "CC_HD_ESD_1_0"
+  },
+
+  "default_platform": "win64",
+
+  "apps": {
+    "photoshop":    { "sap": "PHSP", "name": "Photoshop",         "version": "26.0",  "family": "Photoshop" },
+    "premiere":     { "sap": "PPRO", "name": "Premiere Pro",      "version": "25.0",  "family": "Premiere Pro" },
+    "aftereffects": { "sap": "AEFT", "name": "After Effects",     "version": "25.0",  "family": "After Effects" },
+    "illustrator":  { "sap": "ILST", "name": "Illustrator",       "version": "29.0",  "family": "Illustrator" },
+    "animate":      { "sap": "FLPR", "name": "Animate",           "version": "24.0",  "family": "Animate" },
+    "lightroom":    { "sap": "LTRM", "name": "Lightroom Classic", "version": "14.0",  "family": "Lightroom Classic" },
+    "mediaencoder": { "sap": "AME",  "name": "Media Encoder",     "version": "25.0",  "family": "Media Encoder" }
+  }
+}

@@ -15,6 +15,7 @@ mod catalog;
 mod doctor;
 mod download;
 mod install;
+mod ledger;
 mod offline;
 mod output;
 mod source;
@@ -54,6 +55,8 @@ enum Cmd {
     },
     /// Install one app (or the whole suite) into a Neutron prefix.
     Install(InstallArgs),
+    /// Show the resolved download ledger (endpoints, SAP codes, versions).
+    Ledger,
 }
 
 #[derive(Args)]
@@ -110,6 +113,7 @@ fn main() -> ExitCode {
             };
             acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
         }
+        Cmd::Ledger => ledger::cmd_ledger(&em),
     };
 
     match result {
