@@ -61,8 +61,9 @@ pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Pat
     let mut last_pct = u8::MAX;
 
     for (i, p) in plan.packages.iter().enumerate() {
-        let rel = p.path.trim_start_matches('/');
-        let out = dest.join(rel);
+        // HyperDrive layout: <dest>/<SAP>/<packagefile> (driver.xml EsdDirectory=./SAP).
+        let file = p.path.rsplit('/').next().unwrap_or(p.path.as_str());
+        let out = dest.join(&p.sap).join(file);
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
         }

@@ -86,17 +86,29 @@ pub struct Package {
 pub struct DownloadPlan {
     pub app: String,
     pub sap: String,
+    pub name: String,
     pub product_version: String,
+    pub platform: String,
     pub build_guid: String,
     pub language: String,
     pub packages: Vec<PlannedPackage>,
     pub total_bytes: u64,
-    /// Count of shared dependencies the manifest lists (resolved later).
-    pub dependency_count: usize,
+    /// Shared components the app needs (from the manifest). Not yet downloadable —
+    /// components aren't in the products feed (resolution is an open item) — but
+    /// listed here + in the generated driver.xml.
+    pub dependencies: Vec<Dependency>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Dependency {
+    pub sap: String,
+    pub base_version: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PlannedPackage {
+    /// Which component (SAP) this package belongs to — the per-SAP install dir.
+    pub sap: String,
     pub name: String,
     pub kind: String,
     pub bytes: u64,
@@ -184,6 +196,7 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
         }
         total_bytes += p.download_size;
         packages.push(PlannedPackage {
+            sap: build.sap.clone(),
             name: p.name.clone(),
             kind: p.kind.clone(),
             bytes: p.download_size,
@@ -192,22 +205,33 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
             validation_url: p.validation_url.clone(),
         });
     }
-    let dependency_count = manifest
+    let dependencies = manifest
         .dependencies
         .get("Dependency")
         .and_then(|d| d.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| {
+                    Some(Dependency {
+                        sap: d.get("SAPCode")?.as_str()?.to_string(),
+                        base_version: d.get("BaseVersion").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     DownloadPlan {
         app: build.app_id.clone(),
         sap: build.sap.clone(),
+        name: manifest.name.clone(),
         product_version: manifest.product_version.clone(),
+        platform: build.platform.clone(),
         build_guid: build.build_guid.clone(),
         language: language.to_string(),
         packages,
         total_bytes,
-        dependency_count,
+        dependencies,
     }
 }
 
@@ -260,6 +284,8 @@ pub fn cmd_download(
                 print_plan_human(&plan);
             }
             crate::download::fetch_plan(em, &ledger, &plan, dest)?;
+            let driver = crate::driver::write_driver_xml(&plan, dest)?;
+            em.note(&format!("wrote install descriptor {}", driver.display()));
         }
     }
     Ok(())
@@ -274,10 +300,10 @@ fn print_plan_human(plan: &DownloadPlan) {
         "  {} package(s), {:.2} GiB{}:",
         plan.packages.len(),
         plan.total_bytes as f64 / (1u64 << 30) as f64,
-        if plan.dependency_count > 0 {
-            format!(" (+{} shared dependencies, resolved later)", plan.dependency_count)
-        } else {
+        if plan.dependencies.is_empty() {
             String::new()
+        } else {
+            format!(" (+{} shared dependencies, resolved later)", plan.dependencies.len())
         }
     );
     for p in &plan.packages {

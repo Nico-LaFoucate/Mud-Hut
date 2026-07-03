@@ -15,6 +15,7 @@ mod auth;
 mod catalog;
 mod doctor;
 mod download;
+mod driver;
 mod feed;
 mod install;
 mod ledger;
