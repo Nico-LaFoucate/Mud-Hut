@@ -21,6 +21,8 @@ anyhow = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 # Read-only XML for the Adobe product feed (buildGuid lookup). Pure-Rust, no deps.
 roxmltree = "0.20"
+# SHA-256 verification of downloaded packages (manifest packageHashKey).
+sha2 = "0.10"
 
 [profile.release]
 strip = true

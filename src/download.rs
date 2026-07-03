@@ -1,19 +1,290 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `--method download`: fetch an offline payload straight from Adobe.
+//! `--method download`: fetch an app's packages straight from Adobe.
 //!
-//! Roadmap 1.3 — a port of `ccdl.py` (Drovosek01/adobe-packager): read the remote
-//! ledger for endpoints + the app's SAP code / version / arch, hit the
-//! unauthenticated product feed, parse the build's `Driver.xml`, download the
-//! chunks in parallel with SHA-256 verification, stitch/unpack into a scratch dir,
-//! and return it as an [`Acquisition`] for the shared pipeline to stage.
+//! The resolve half (feed -> buildGuid -> manifest -> [`DownloadPlan`]) lives in
+//! [`crate::feed`]. This module is the fetch half: download each planned package
+//! from the CDN into a destination tree (preserving Adobe's `Path` layout so the
+//! HyperDrive `Setup.exe` finds them), streaming to disk while verifying integrity.
 //!
-//! Not implemented yet — this is the seam it will fill.
+//! **Verification.** Adobe's `packageHashKey` is NOT the hash of the downloaded
+//! bytes (it's identical across the TYPE1/TYPE2 algorithms — a decrypted-content
+//! identity). The real download-integrity check is the package's **ValidationURL**
+//! (`?algorithm=TYPE2`): a per-`segmentSize` (2 MiB) list of SHA-256 segment
+//! hashes. We verify each segment as it streams. Idempotent: a file already
+//! present at the expected size is trusted and skipped.
+//!
+//! Next: generate `driver.xml` + run the standalone HyperDrive installer, then the
+//! token->opm.db licensing handoff (Path 1).
 
-use anyhow::{bail, Result};
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::time::Duration;
 
+use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
+
+use crate::feed::DownloadPlan;
 use crate::install::Acquisition;
+use crate::ledger::Ledger;
 use crate::output::Emitter;
 
+/// Not wired to the shared `install::run` pipeline yet — the download method
+/// installs via Adobe's `Setup.exe` (decrypt), not a plain copy, so it needs its
+/// own staging step (next increment). Use `mudhut download --dest` for now.
 pub fn acquire(_em: &Emitter, _app: Option<&str>, _suite: bool) -> Result<Acquisition> {
-    bail!("--method download is not implemented yet (roadmap 1.3: ledger + ccdl.py port)")
+    bail!("`install --method download` not wired yet — use `mudhut download <app> --dest <dir>` \
+           to fetch+verify packages (HyperDrive install is the next increment)")
+}
+
+/// Per-segment validation info from a package's ValidationURL (TYPE2 = SHA-256).
+struct Validation {
+    segment_size: u64,
+    segments: Vec<String>, // hex SHA-256, ordered by segmentNumber
+}
+
+/// Download every package in `plan` into `dest`, preserving Adobe's `Path` layout,
+/// verifying each 2 MiB segment's SHA-256 against the ValidationURL. Idempotent
+/// (size-matched files skipped).
+pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+    let cdn = ledger.endpoints.cdn_base.trim_end_matches('/');
+    let agent = ureq::builder()
+        .timeout_connect(Duration::from_secs(30))
+        .timeout_read(Duration::from_secs(120))
+        .build();
+
+    let total = plan.total_bytes;
+    let n = plan.packages.len();
+    let mut done = 0u64;
+    let mut last_pct = u8::MAX;
+
+    for (i, p) in plan.packages.iter().enumerate() {
+        let rel = p.path.trim_start_matches('/');
+        let out = dest.join(rel);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Idempotent skip: present at the expected size -> trust the prior verify.
+        if fs::metadata(&out).map(|m| m.len() == p.bytes).unwrap_or(false) {
+            done += p.bytes;
+            em.note(&format!("[{}/{n}] present, skip — {}", i + 1, p.name));
+            last_pct = emit_pct(em, done, total, &p.name, last_pct);
+            continue;
+        }
+
+        em.note(&format!(
+            "[{}/{n}] {} — {:.1} MiB",
+            i + 1,
+            p.name,
+            p.bytes as f64 / (1u64 << 20) as f64
+        ));
+
+        // Per-segment SHA-256 list for integrity (empty URL -> size-only trust).
+        let validation = if p.validation_url.is_empty() {
+            em.note(&format!("  no ValidationURL for {} — verifying by size only", p.name));
+            None
+        } else {
+            Some(
+                fetch_validation(&agent, &ledger.headers, &p.validation_url)
+                    .with_context(|| format!("fetching validation for {}", p.name))?,
+            )
+        };
+
+        let url = format!("{cdn}{}", p.path);
+        let res = download_one(
+            em, &agent, &url, &ledger.headers, &out, validation.as_ref(),
+            &mut done, total, &mut last_pct,
+        );
+        if let Err(e) = res {
+            let _ = fs::remove_file(out.with_extension("part"));
+            let _ = fs::remove_file(&out);
+            return Err(e).with_context(|| format!("downloading {}", p.name));
+        }
+    }
+
+    em.progress("download", 100, "downloaded + verified");
+    if em.is_json() {
+        #[derive(serde::Serialize)]
+        struct DownloadResult<'a> {
+            ok: bool,
+            app: &'a str,
+            product_version: &'a str,
+            packages: usize,
+            total_bytes: u64,
+            verified: bool,
+            dest: String,
+        }
+        em.result(&DownloadResult {
+            ok: true,
+            app: &plan.app,
+            product_version: &plan.product_version,
+            packages: n,
+            total_bytes: total,
+            verified: true,
+            dest: dest.display().to_string(),
+        });
+    } else {
+        println!(
+            "Downloaded + verified {} package(s), {:.2} GiB into {}",
+            n,
+            total as f64 / (1u64 << 30) as f64,
+            dest.display()
+        );
+    }
+    Ok(())
+}
+
+/// Fetch + parse a package's TYPE2 validation (per-segment SHA-256 list).
+fn fetch_validation(
+    agent: &ureq::Agent,
+    headers: &BTreeMap<String, String>,
+    base_url: &str,
+) -> Result<Validation> {
+    let url = if base_url.contains('?') {
+        format!("{base_url}&algorithm=TYPE2")
+    } else {
+        format!("{base_url}?algorithm=TYPE2")
+    };
+    let mut req = agent.get(&url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let xml = req
+        .call()
+        .with_context(|| format!("GET {url}"))?
+        .into_string()
+        .context("reading validation body")?;
+    let doc = roxmltree::Document::parse(&xml).context("parsing validation XML")?;
+
+    let segment_size = doc
+        .descendants()
+        .find(|n| n.has_tag_name("segmentSize"))
+        .and_then(|n| n.text())
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .context("validation XML missing segmentSize")?;
+
+    let mut segs: Vec<(usize, String)> = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("segment"))
+        .filter_map(|n| {
+            let num = n.attribute("segmentNumber")?.parse::<usize>().ok()?;
+            Some((num, n.text()?.trim().to_string()))
+        })
+        .collect();
+    segs.sort_by_key(|(num, _)| *num);
+    let segments = segs.into_iter().map(|(_, h)| h).collect::<Vec<_>>();
+
+    if segments.is_empty() {
+        bail!("validation XML listed no segments");
+    }
+    Ok(Validation { segment_size, segments })
+}
+
+/// Stream one package to `<out>.part`, verifying each segment's SHA-256 against
+/// `validation` as it arrives, then atomically rename on full success.
+#[allow(clippy::too_many_arguments)]
+fn download_one(
+    em: &Emitter,
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    out: &Path,
+    validation: Option<&Validation>,
+    done: &mut u64,
+    total: u64,
+    last_pct: &mut u8,
+) -> Result<()> {
+    let mut req = agent.get(url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let resp = req.call().with_context(|| format!("GET {url}"))?;
+    let mut reader = resp.into_reader();
+
+    let tmp = out.with_extension("part");
+    let mut f = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let mut buf = vec![0u8; 1 << 20]; // 1 MiB
+    let label = out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+
+    let seg_size = validation.map(|v| v.segment_size.max(1)).unwrap_or(u64::MAX);
+    let mut hasher = Sha256::new();
+    let mut seg_filled = 0u64;
+    let mut seg_idx = 0usize;
+
+    loop {
+        let read = reader.read(&mut buf).context("reading from CDN")?;
+        if read == 0 {
+            break;
+        }
+        f.write_all(&buf[..read]).context("writing to disk")?;
+        *done += read as u64;
+
+        if let Some(v) = validation {
+            // Feed the chunk into the segment hasher, splitting at 2 MiB boundaries.
+            let mut off = 0usize;
+            while off < read {
+                let take = ((seg_size - seg_filled) as usize).min(read - off);
+                hasher.update(&buf[off..off + take]);
+                seg_filled += take as u64;
+                off += take;
+                if seg_filled == seg_size {
+                    let got = to_hex(&hasher.finalize_reset());
+                    check_segment(v, seg_idx, &got, &label)?;
+                    seg_idx += 1;
+                    seg_filled = 0;
+                }
+            }
+        }
+        *last_pct = emit_pct(em, *done, total, &label, *last_pct);
+    }
+
+    if let Some(v) = validation {
+        if seg_filled > 0 {
+            let got = to_hex(&hasher.finalize_reset());
+            check_segment(v, seg_idx, &got, &label)?;
+            seg_idx += 1;
+        }
+        if seg_idx != v.segments.len() {
+            bail!("{label}: verified {seg_idx} segment(s) but validation lists {}", v.segments.len());
+        }
+    }
+
+    f.flush()?;
+    drop(f);
+    fs::rename(&tmp, out).with_context(|| format!("finalizing {}", out.display()))?;
+    Ok(())
+}
+
+fn check_segment(v: &Validation, idx: usize, got: &str, label: &str) -> Result<()> {
+    let want = v
+        .segments
+        .get(idx)
+        .with_context(|| format!("{label}: segment {idx} beyond the validation list"))?;
+    if !got.eq_ignore_ascii_case(want) {
+        bail!("{label}: segment {idx} SHA-256 mismatch (got {got}, want {want})");
+    }
+    Ok(())
+}
+
+fn emit_pct(em: &Emitter, done: u64, total: u64, label: &str, last: u8) -> u8 {
+    let p = if total == 0 {
+        100
+    } else {
+        ((done.min(total) as f64 / total as f64) * 100.0) as u8
+    };
+    if p != last {
+        em.progress("download", p, label);
+    }
+    p
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }

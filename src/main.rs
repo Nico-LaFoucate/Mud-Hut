@@ -59,17 +59,23 @@ enum Cmd {
     Install(InstallArgs),
     /// Show the resolved download ledger (endpoints, SAP codes, versions).
     Ledger,
-    /// Resolve an app's Adobe download (feed -> buildGuid -> manifest -> plan).
-    /// With --plan (default), reports what would be downloaded without fetching.
+    /// Resolve + download an app from Adobe (feed -> buildGuid -> manifest -> plan
+    /// -> fetch+verify). Without --dest, reports the plan and downloads nothing.
     Download {
         /// App id (e.g. photoshop). See `mudhut ledger` for the list.
         app: String,
         /// Install language to plan for.
         #[arg(long, default_value = "en_US")]
         lang: String,
-        /// Resolve + report the package plan without downloading (only mode for now).
-        #[arg(long, default_value_t = true)]
-        plan: bool,
+        /// Download+verify into this dir (preserving Adobe's layout). Omit = plan only.
+        #[arg(long)]
+        dest: Option<PathBuf>,
+        /// Skip non-core packages (e.g. the large AI / Neural-Filter models).
+        #[arg(long)]
+        core_only: bool,
+        /// Only packages whose name contains this substring (selective / testing).
+        #[arg(long)]
+        only: Option<String>,
     },
     /// Adobe sign-in (device/QR flow). Collider drives these: `begin` once, then
     /// `poll` every few seconds until the user has signed in.
@@ -147,7 +153,9 @@ fn main() -> ExitCode {
             acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
         }
         Cmd::Ledger => ledger::cmd_ledger(&em),
-        Cmd::Download { app, lang, plan: _ } => feed::cmd_plan(&em, &app, &lang),
+        Cmd::Download { app, lang, dest, core_only, only } => {
+            feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
+        }
         Cmd::Auth { action } => match action {
             AuthAction::Begin => auth::cmd_begin(&em),
             AuthAction::Poll { request_id, device_id } => auth::cmd_poll(&em, &request_id, &device_id),

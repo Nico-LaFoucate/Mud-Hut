@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -71,6 +72,10 @@ pub struct Package {
     pub path: String,
     #[serde(rename = "packageHashKey", default)]
     pub hash: String,
+    /// Base validation endpoint; append `?algorithm=TYPE2` for the per-segment
+    /// SHA-256 list used to verify the downloaded bytes.
+    #[serde(rename = "ValidationURL", default)]
+    pub validation_url: String,
     /// e.g. `[installLanguage]==en_US`; empty = required for every install.
     #[serde(rename = "Condition", default)]
     pub condition: String,
@@ -96,7 +101,11 @@ pub struct PlannedPackage {
     pub kind: String,
     pub bytes: u64,
     pub path: String,
-    pub sha256: String,
+    /// Adobe's `packageHashKey` (decrypted-content identity — NOT the download-byte
+    /// hash; kept for reference/reporting only).
+    pub package_hash_key: String,
+    /// Validation endpoint base (append `?algorithm=TYPE2` for per-segment SHA-256).
+    pub validation_url: String,
 }
 
 /// Resolve the latest build for `app_id` from the live product feed.
@@ -179,7 +188,8 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
             kind: p.kind.clone(),
             bytes: p.download_size,
             path: p.path.clone(),
-            sha256: p.hash.clone(),
+            package_hash_key: p.hash.clone(),
+            validation_url: p.validation_url.clone(),
         });
     }
     let dependency_count = manifest
@@ -201,49 +211,83 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
     }
 }
 
-/// `mudhut download <app> --plan` — resolve + fetch the manifest + report the plan
-/// WITHOUT downloading. The actual fetch/verify/install is the next increment.
-pub fn cmd_plan(em: &Emitter, app_id: &str, language: &str) -> Result<()> {
+/// `mudhut download <app>` — resolve + plan, then (with `--dest`) download+verify.
+/// `--core-only` drops non-core packages (skips the big AI models); `--only <sub>`
+/// keeps only packages whose name contains `<sub>` (selective / testing).
+/// Without `--dest`, reports the plan and downloads nothing.
+pub fn cmd_download(
+    em: &Emitter,
+    app_id: &str,
+    language: &str,
+    dest: Option<&Path>,
+    core_only: bool,
+    only: Option<&str>,
+) -> Result<()> {
     let ledger = Ledger::load(em)?;
     let build = resolve_build(em, &ledger, app_id)?;
     let manifest = fetch_manifest(em, &ledger, &build)?;
-    let plan = plan(&build, &manifest, language);
+    let mut plan = plan(&build, &manifest, language);
+
+    if core_only {
+        plan.packages.retain(|p| p.kind == "core");
+    }
+    if let Some(sub) = only {
+        let s = sub.to_lowercase();
+        plan.packages.retain(|p| p.name.to_lowercase().contains(&s));
+    }
+    plan.total_bytes = plan.packages.iter().map(|p| p.bytes).sum();
     em.progress("resolve", 100, "planned");
 
     if plan.packages.is_empty() {
         bail!(
-            "no packages matched language '{}' for {} — try a different --lang (e.g. en_US)",
-            language, plan.sap
+            "no packages matched for {} (language '{}'{})",
+            plan.sap,
+            language,
+            only.map(|o| format!(", filter '{o}'")).unwrap_or_default()
         );
     }
 
-    if em.is_json() {
-        em.result(&plan);
-    } else {
-        println!(
-            "{} {} ({}) — build {}",
-            plan.app, plan.product_version, plan.language, plan.build_guid
-        );
-        println!(
-            "  {} package(s), {:.2} GiB{}:",
-            plan.packages.len(),
-            plan.total_bytes as f64 / (1u64 << 30) as f64,
-            if plan.dependency_count > 0 {
-                format!(" (+{} shared dependencies, resolved later)", plan.dependency_count)
+    match dest {
+        None => {
+            if em.is_json() {
+                em.result(&plan);
             } else {
-                String::new()
+                print_plan_human(&plan);
             }
-        );
-        for p in &plan.packages {
-            println!(
-                "    {:>8.1} MiB  [{}]  {}",
-                p.bytes as f64 / (1u64 << 20) as f64,
-                p.kind,
-                p.name
-            );
+        }
+        Some(dest) => {
+            if !em.is_json() {
+                print_plan_human(&plan);
+            }
+            crate::download::fetch_plan(em, &ledger, &plan, dest)?;
         }
     }
     Ok(())
+}
+
+fn print_plan_human(plan: &DownloadPlan) {
+    println!(
+        "{} {} ({}) — build {}",
+        plan.app, plan.product_version, plan.language, plan.build_guid
+    );
+    println!(
+        "  {} package(s), {:.2} GiB{}:",
+        plan.packages.len(),
+        plan.total_bytes as f64 / (1u64 << 30) as f64,
+        if plan.dependency_count > 0 {
+            format!(" (+{} shared dependencies, resolved later)", plan.dependency_count)
+        } else {
+            String::new()
+        }
+    );
+    for p in &plan.packages {
+        println!(
+            "    {:>8.1} MiB  [{}]  {}",
+            p.bytes as f64 / (1u64 << 20) as f64,
+            p.kind,
+            p.name
+        );
+    }
 }
 
 fn condition_matches(cond: &str, lang: &str) -> bool {
