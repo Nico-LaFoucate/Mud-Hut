@@ -19,6 +19,8 @@ anyhow = "1"
 # HTTP client for the remote ledger (1.2) and the Adobe download pipeline (1.3).
 # rustls (pure-Rust TLS) — no system OpenSSL dep, portable across distros.
 ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+# Read-only XML for the Adobe product feed (buildGuid lookup). Pure-Rust, no deps.
+roxmltree = "0.20"
 
 [profile.release]
 strip = true

@@ -5,7 +5,7 @@
 
   "endpoints": {
     "products_feed": "https://cdn-ffc.oobesaas.adobe.com/core/v6/products/all?_type=xml&channel=ccm&channel=sti&channel=ccd&platform={platform}&productType=Desktop",
-    "application_manifest": "https://cdn-ffc.oobesaas.adobe.com/core/v6/applications/{sap}/{version}?platform={platform}",
+    "application_manifest": "https://cdn-ffc.oobesaas.adobe.com/core/v3/applications",
     "cdn_base": "https://ccmdls.adobe.com"
   },
 

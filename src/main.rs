@@ -15,6 +15,7 @@ mod auth;
 mod catalog;
 mod doctor;
 mod download;
+mod feed;
 mod install;
 mod ledger;
 mod offline;
@@ -58,6 +59,18 @@ enum Cmd {
     Install(InstallArgs),
     /// Show the resolved download ledger (endpoints, SAP codes, versions).
     Ledger,
+    /// Resolve an app's Adobe download (feed -> buildGuid -> manifest -> plan).
+    /// With --plan (default), reports what would be downloaded without fetching.
+    Download {
+        /// App id (e.g. photoshop). See `mudhut ledger` for the list.
+        app: String,
+        /// Install language to plan for.
+        #[arg(long, default_value = "en_US")]
+        lang: String,
+        /// Resolve + report the package plan without downloading (only mode for now).
+        #[arg(long, default_value_t = true)]
+        plan: bool,
+    },
     /// Adobe sign-in (device/QR flow). Collider drives these: `begin` once, then
     /// `poll` every few seconds until the user has signed in.
     Auth {
@@ -134,6 +147,7 @@ fn main() -> ExitCode {
             acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
         }
         Cmd::Ledger => ledger::cmd_ledger(&em),
+        Cmd::Download { app, lang, plan: _ } => feed::cmd_plan(&em, &app, &lang),
         Cmd::Auth { action } => match action {
             AuthAction::Begin => auth::cmd_begin(&em),
             AuthAction::Poll { request_id, device_id } => auth::cmd_poll(&em, &request_id, &device_id),
