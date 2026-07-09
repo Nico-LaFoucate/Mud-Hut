@@ -151,7 +151,7 @@ fn finish(em: &Emitter, r: InstallResult) -> Result<()> {
 }
 
 /// Run `neutron prefix provision <prefix>`, inheriting output.
-fn provision(prefix: &Path) -> Result<()> {
+pub fn provision(prefix: &Path) -> Result<()> {
     let status = Command::new("neutron")
         .arg("prefix")
         .arg("provision")

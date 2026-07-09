@@ -17,6 +17,7 @@ mod doctor;
 mod download;
 mod driver;
 mod feed;
+mod hdpim;
 mod install;
 mod ledger;
 mod offline;
@@ -131,7 +132,8 @@ struct InstallArgs {
 enum Method {
     /// Copy from an existing Windows install (implemented).
     Windows,
-    /// Download from Adobe (roadmap 1.3, not yet implemented).
+    /// Install genuine from Adobe via the HDPIM offline engine (decrypt; no
+    /// Set-up.exe/WAM/CC-desktop). Needs `--source <staged products dir>` for now.
     Download,
     /// Extract from an Adobe offline package / ISO (roadmap 1.4, not yet implemented).
     Offline,
@@ -144,15 +146,17 @@ fn main() -> ExitCode {
     let result = match cli.cmd {
         Cmd::Doctor { prefix } => doctor::run(&em, prefix.as_deref()),
         Cmd::Apps { source } => catalog::cmd_apps(&em, source.as_deref()),
-        Cmd::Install(a) => {
-            // acquire (method-specific) -> stage + provision (shared pipeline).
-            let acq = match a.method {
-                Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite),
-                Method::Download => download::acquire(&em, a.app.as_deref(), a.suite),
-                Method::Offline => offline::acquire(&em, a.source.as_deref(), a.app.as_deref(), a.suite),
-            };
-            acq.and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run))
-        }
+        Cmd::Install(a) => match a.method {
+            // download has its own decrypt-install engine (HDPIM), not copy-staging.
+            Method::Download => {
+                download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
+            }
+            // windows/offline: acquire (method-specific) -> stage + provision (shared).
+            Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite)
+                .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
+            Method::Offline => offline::acquire(&em, a.source.as_deref(), a.app.as_deref(), a.suite)
+                .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
+        },
         Cmd::Ledger => ledger::cmd_ledger(&em),
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())

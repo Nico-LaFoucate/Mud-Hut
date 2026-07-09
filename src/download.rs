@@ -19,23 +19,92 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::feed::DownloadPlan;
-use crate::install::Acquisition;
 use crate::ledger::Ledger;
 use crate::output::Emitter;
 
-/// Not wired to the shared `install::run` pipeline yet — the download method
-/// installs via Adobe's `Setup.exe` (decrypt), not a plain copy, so it needs its
-/// own staging step (next increment). Use `mudhut download --dest` for now.
-pub fn acquire(_em: &Emitter, _app: Option<&str>, _suite: bool) -> Result<Acquisition> {
-    bail!("`install --method download` not wired yet — use `mudhut download <app> --dest <dir>` \
-           to fetch+verify packages (HyperDrive install is the next increment)")
+/// `install --method download`: install a genuine app into `prefix` via the HDPIM
+/// offline engine (decrypt, no Set-up.exe/WAM/CC-desktop). `source` must point at a
+/// staged product package dir (holds `<SAP>/` payloads + its deps) — the auto-download
+/// of the full dependency set is the next increment (the products feed doesn't yet
+/// resolve the shared components). We resolve the product's DriverInfo from the feed,
+/// write it beside the packages, then run the engine and provision.
+pub fn install(
+    em: &Emitter,
+    app: Option<&str>,
+    source: Option<&Path>,
+    prefix: &Path,
+    dry_run: bool,
+) -> Result<()> {
+    let app_id = app.context("`--method download` needs an app id (e.g. `photoshop`)")?;
+    let cat = crate::catalog::find(app_id)
+        .with_context(|| format!("unknown app '{app_id}' (see `mudhut apps`)"))?;
+    let packages = source.context(
+        "`--method download` needs `--source <staged products dir>` for now \
+         (full auto-download incl. dependencies is the next increment)",
+    )?;
+    if !packages.is_dir() {
+        bail!("--source is not a directory: {}", packages.display());
+    }
+
+    // Resolve the product (lightweight: feed -> manifest -> plan; no payload download).
+    let ledger = Ledger::load(em)?;
+    let build = crate::feed::resolve_build(em, &ledger, app_id)?;
+    let manifest = crate::feed::fetch_manifest(em, &ledger, &build)?;
+    let plan = crate::feed::plan(&build, &manifest, "en_US");
+
+    // Write the DriverInfo beside the packages (HDPIM reads it; EsdDirectory is
+    // relative to this dir).
+    let driver_xml = crate::driver::write_driver_xml(&plan, packages)?;
+    em.note(&format!(
+        "install {} {} ({}) from {}",
+        cat.name, plan.product_version, plan.sap, packages.display()
+    ));
+
+    // Discover + run the HDPIM engine.
+    let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir()?)?;
+    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, &driver_xml, packages, dry_run)?;
+
+    if dry_run {
+        return Ok(());
+    }
+    em.progress("provision", 100, "neutron prefix provision");
+    crate::install::provision(prefix)?;
+    em.note(&format!("installed: {}", exe.display()));
+    Ok(())
+}
+
+/// Where the shipped `hdpim_host.exe` + `extract_accc_runtime.py` live.
+/// `$MUDHUT_TOOLS`, else `<exe dir>/tools`, else `./tools`.
+fn repo_tools_dir() -> Result<PathBuf> {
+    if let Ok(t) = std::env::var("MUDHUT_TOOLS") {
+        return Ok(PathBuf::from(t));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let t = dir.join("tools");
+            if t.is_dir() {
+                return Ok(t);
+            }
+        }
+    }
+    Ok(PathBuf::from("tools"))
+}
+
+/// Staged public ACCCx runtime packages: `$MUDHUT_ACCC_PACKAGES`, else the
+/// conventional stage under `$HOME`.
+fn accc_packages_dir() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
+        return Ok(PathBuf::from(p));
+    }
+    let home = std::env::var("HOME").context("HOME not set")?;
+    Ok(PathBuf::from(home).join("mudhut-parent-stage/packages"))
 }
 
 /// Per-segment validation info from a package's ValidationURL (TYPE2 = SHA-256).
