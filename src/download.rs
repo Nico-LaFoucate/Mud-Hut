@@ -107,9 +107,24 @@ pub fn install(
     // Write the DriverInfo beside the packages (EsdDirectory is relative to it).
     let driver_xml = crate::driver::write_driver_xml(&plan, &products)?;
 
-    // Discover + run the HDPIM engine, then provision.
+    // Shared HDPIM tail (same engine `offline` uses).
+    hdpim_install_and_provision(em, &cat, &driver_xml, &products, prefix, "download", dry_run)
+}
+
+/// The shared install tail for the HDPIM-engine methods (`download` + `offline`):
+/// discover + run the decrypt-install engine, seed the app's UI fonts, provision
+/// the prefix, install the menu launcher, and emit the terminal `result` event.
+pub(crate) fn hdpim_install_and_provision(
+    em: &Emitter,
+    cat: &crate::catalog::App,
+    driver_xml: &Path,
+    products: &Path,
+    prefix: &Path,
+    method: &str,
+    dry_run: bool,
+) -> Result<()> {
     let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir()?)?;
-    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, &driver_xml, &products, dry_run)?;
+    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, driver_xml, products, dry_run)?;
 
     if dry_run {
         return Ok(());
@@ -121,7 +136,17 @@ pub fn install(
     seed_ui_fonts(em, &exe, prefix);
     em.progress("provision", 100, "neutron prefix provision");
     crate::install::provision(prefix)?;
-    let _ = crate::desktop::install_entry(em, &cat, prefix); // best-effort menu launcher
+    let _ = crate::desktop::install_entry(em, cat, prefix); // best-effort menu launcher
+    if em.is_json() {
+        em.result(&serde_json::json!({
+            "ok": true,
+            "method": method,
+            "app": cat.id,
+            "prefix": prefix.display().to_string(),
+            "exe": exe.display().to_string(),
+            "provisioned": true,
+        }));
+    }
     em.note(&format!("installed: {}", exe.display()));
     Ok(())
 }

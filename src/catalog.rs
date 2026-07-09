@@ -58,11 +58,30 @@ pub fn find(id: &str) -> Option<App> {
     apps().into_iter().find(|a| a.id == id)
 }
 
+/// What a `--source` dir turned out to be: a Windows install tree, or an
+/// offline package (Adobe's ESD `<SAP>/Application.json` products layout).
+enum Found {
+    Windows(source::Source),
+    Offline(std::path::PathBuf),
+}
+
 /// `mudhut apps [--source DIR]` — list the catalog, and if a source is given,
 /// mark which apps are actually present there (with the resolved directory).
+/// The source may be a Windows install root OR an offline package dir; the
+/// result carries `source_kind` so a UI can tell which one it found.
 pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
     let src = match source {
-        Some(s) => Some(source::Source::discover(s)?),
+        Some(s) => Some(match source::Source::discover(s) {
+            Ok(w) => Found::Windows(w),
+            Err(_) => match crate::offline::products_dir(s) {
+                Some(p) => Found::Offline(p),
+                None => anyhow::bail!(
+                    "{} is neither a Windows install root (no Program Files/Adobe) \
+                     nor an offline package (no <SAP>/Application.json)",
+                    s.display()
+                ),
+            },
+        }),
         None => None,
     };
 
@@ -77,13 +96,21 @@ pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
     #[derive(Serialize)]
     struct Out {
         source: Option<String>,
+        source_kind: Option<&'static str>,
         apps: Vec<Row>,
     }
 
     let rows: Vec<Row> = apps()
         .into_iter()
         .map(|a| {
-            let dir = src.as_ref().and_then(|s| s.app_dir(&a));
+            let dir = match &src {
+                Some(Found::Windows(s)) => s.app_dir(&a),
+                Some(Found::Offline(p)) => {
+                    let d = p.join(a.sap);
+                    d.join("Application.json").is_file().then_some(d)
+                }
+                None => None,
+            };
             Row {
                 id: a.id,
                 name: a.name,
@@ -95,7 +122,14 @@ pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
         .collect();
 
     let out = Out {
-        source: src.as_ref().map(|s| s.root().display().to_string()),
+        source: src.as_ref().map(|s| match s {
+            Found::Windows(w) => w.root().display().to_string(),
+            Found::Offline(p) => p.display().to_string(),
+        }),
+        source_kind: src.as_ref().map(|s| match s {
+            Found::Windows(_) => "windows",
+            Found::Offline(_) => "offline",
+        }),
         apps: rows,
     };
 
