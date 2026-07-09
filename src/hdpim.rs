@@ -52,7 +52,7 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf) -> Result<Config> {
     Ok(Config { wine, hdpim_host, extractor, accc_packages })
 }
 
-fn resolve_wine() -> Option<PathBuf> {
+pub(crate) fn resolve_wine() -> Option<PathBuf> {
     // 1. Explicit override — MUDHUT_WINE, or NEUTRON_WINE (honor whatever the user
     //    already pointed neutron at, so the two agree on one wine).
     for var in ["MUDHUT_WINE", "NEUTRON_WINE"] {

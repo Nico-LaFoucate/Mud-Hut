@@ -210,7 +210,7 @@ fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
 /// dev-tree `<repo>/tools` (binary at `<repo>/target/{debug,release}/mudhut`),
 /// else `./tools`. The dev-tree probe is what lets Collider — which runs the
 /// symlinked debug binary from its own CWD — find the tools.
-fn repo_tools_dir() -> Result<PathBuf> {
+pub(crate) fn repo_tools_dir() -> Result<PathBuf> {
     if let Ok(t) = std::env::var("MUDHUT_TOOLS") {
         return Ok(PathBuf::from(t));
     }
