@@ -54,7 +54,8 @@ enum Cmd {
     },
     /// List installable Adobe apps; with --source, report what's present there.
     Apps {
-        /// A Windows install root (drive_c, a mounted C:, or a copied tree).
+        /// A Windows install root (drive_c, a mounted C:, or a copied tree), or
+        /// an offline package dir (`<SAP>/Application.json` payload layout).
         #[arg(long)]
         source: Option<PathBuf>,
     },
@@ -116,7 +117,8 @@ struct InstallArgs {
     method: Method,
 
     /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
-    /// copied tree). For `offline`: the Adobe offline package / ISO.
+    /// copied tree). For `offline`: the package dir (`<SAP>/` payload layout, as
+    /// staged by `mudhut download --dest`; extract an ISO first).
     #[arg(long)]
     source: Option<PathBuf>,
 
@@ -136,7 +138,9 @@ enum Method {
     /// Install genuine from Adobe via the HDPIM offline engine (decrypt; no
     /// Set-up.exe/WAM/CC-desktop). Needs `--source <staged products dir>` for now.
     Download,
-    /// Extract from an Adobe offline package / ISO (roadmap 1.4, not yet implemented).
+    /// Install from a pre-downloaded Adobe offline package — the ESD products
+    /// layout `mudhut download --dest` stages (`<SAP>/Application.json` + payload
+    /// zips). Fully local; ISOs must be extracted first. Needs `--source <dir>`.
     Offline,
 }
 
@@ -152,11 +156,14 @@ fn main() -> ExitCode {
             Method::Download => {
                 download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
             }
-            // windows/offline: acquire (method-specific) -> stage + provision (shared).
+            // windows: acquire (copy discovery) -> stage + provision (shared).
             Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite)
                 .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
-            Method::Offline => offline::acquire(&em, a.source.as_deref(), a.app.as_deref(), a.suite)
-                .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
+            // offline: packages are encrypted -> the same HDPIM engine as download,
+            // but resolved fully locally from the staged package (no network).
+            Method::Offline => {
+                offline::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
+            }
         },
         Cmd::Ledger => ledger::cmd_ledger(&em),
         Cmd::Download { app, lang, dest, core_only, only } => {
