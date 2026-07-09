@@ -114,6 +114,11 @@ pub fn install(
     if dry_run {
         return Ok(());
     }
+    // Seed the app's shipped UI fonts (Adobe Clean) into windows/Fonts BEFORE the
+    // provision below registers them. HDPIM leaves these only under the app's
+    // Resources/ui-fonts; without this the provisioned Segoe UI->Adobe Clean font
+    // replacement resolves to an unregistered family -> blank menu bar.
+    seed_ui_fonts(em, &exe, prefix);
     em.progress("provision", 100, "neutron prefix provision");
     crate::install::provision(prefix)?;
     let _ = crate::desktop::install_entry(em, &cat, prefix); // best-effort menu launcher
@@ -157,17 +162,69 @@ fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
         .join("products"))
 }
 
+/// Seed the just-installed app's shipped UI fonts (e.g. Adobe Clean, under
+/// `<install dir>/Resources/ui-fonts`) into the prefix's `windows/Fonts`, so the
+/// subsequent `neutron prefix provision` registers them (neutron's
+/// `register_prefix_fonts` only sees what is already in `windows/Fonts`). HDPIM
+/// installs these fonts only under the app's Resources dir; leaving them there
+/// makes the provisioned Segoe UI->Adobe Clean replacement resolve to an
+/// unregistered family -> blank menu bar. Best-effort: a copy failure never fails
+/// the install.
+fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
+    let Some(src) = exe.parent().map(|d| d.join("Resources").join("ui-fonts")) else {
+        return;
+    };
+    if !src.is_dir() {
+        return;
+    }
+    let dst = prefix.join("drive_c").join("windows").join("Fonts");
+    if let Err(e) = fs::create_dir_all(&dst) {
+        em.note(&format!("ui-fonts: could not create windows/Fonts: {e}"));
+        return;
+    }
+    let mut n = 0u32;
+    if let Ok(rd) = fs::read_dir(&src) {
+        for ent in rd.flatten() {
+            let p = ent.path();
+            let is_font = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| matches!(e.to_ascii_lowercase().as_str(), "otf" | "ttf" | "ttc"))
+                .unwrap_or(false);
+            if !is_font {
+                continue;
+            }
+            let target = dst.join(ent.file_name());
+            if !target.exists() && fs::copy(&p, &target).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        em.note(&format!("seeded {n} UI font(s) into windows/Fonts (Adobe Clean)"));
+    }
+}
+
 /// Where the shipped `hdpim_host.exe` + `extract_accc_runtime.py` live.
-/// `$MUDHUT_TOOLS`, else `<exe dir>/tools`, else `./tools`.
+/// `$MUDHUT_TOOLS`, else `<exe dir>/tools` (shipped layout), else the cargo
+/// dev-tree `<repo>/tools` (binary at `<repo>/target/{debug,release}/mudhut`),
+/// else `./tools`. The dev-tree probe is what lets Collider — which runs the
+/// symlinked debug binary from its own CWD — find the tools.
 fn repo_tools_dir() -> Result<PathBuf> {
     if let Ok(t) = std::env::var("MUDHUT_TOOLS") {
         return Ok(PathBuf::from(t));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let t = dir.join("tools");
-            if t.is_dir() {
-                return Ok(t);
+            // Shipped: tools next to the binary.
+            let shipped = dir.join("tools");
+            if shipped.is_dir() {
+                return Ok(shipped);
+            }
+            // Cargo dev-tree: target/{debug,release}/mudhut -> <repo>/tools.
+            let dev = dir.join("../../tools");
+            if dev.is_dir() {
+                return Ok(dev.canonicalize().unwrap_or(dev));
             }
         }
     }
