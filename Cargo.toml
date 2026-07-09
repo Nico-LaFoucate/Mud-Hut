@@ -1,6 +1,6 @@
 [package]
 name = "mudhut"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "The easy way to install Adobe apps into Neutron prefixes"
 license = "Apache-2.0"
@@ -25,6 +25,9 @@ roxmltree = "0.20"
 # payloads); TYPE1 (small shared deps) is MD5 — both via RustCrypto's DynDigest.
 sha2 = "0.10"
 md-5 = "0.10"
+# Decode the app icon (neutron emits it as a data:image/png;base64 URI) for the
+# generated .desktop launcher.
+base64 = "0.22"
 
 [profile.release]
 strip = true

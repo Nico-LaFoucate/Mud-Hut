@@ -129,6 +129,13 @@ fn run_inner(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Re
     em.progress("provision", 100, "neutron prefix provision");
     provision(prefix).context("neutron prefix provision failed")?;
 
+    // Best-effort application-menu launcher for each installed app.
+    for id in &acq.app_ids {
+        if let Some(app) = crate::catalog::find(id) {
+            let _ = crate::desktop::install_entry(em, &app, prefix);
+        }
+    }
+
     finish(em, InstallResult {
         ok: true, dry_run: false, prefix: prefix.display().to_string(),
         source: acq.source_desc, apps: acq.app_ids, items, total_bytes,

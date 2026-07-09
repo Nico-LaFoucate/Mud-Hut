@@ -116,6 +116,7 @@ pub fn install(
     }
     em.progress("provision", 100, "neutron prefix provision");
     crate::install::provision(prefix)?;
+    let _ = crate::desktop::install_entry(em, &cat, prefix); // best-effort menu launcher
     em.note(&format!("installed: {}", exe.display()));
     Ok(())
 }

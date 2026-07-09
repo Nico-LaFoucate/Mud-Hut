@@ -13,6 +13,7 @@
 
 mod auth;
 mod catalog;
+mod desktop;
 mod doctor;
 mod download;
 mod driver;
