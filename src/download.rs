@@ -45,31 +45,69 @@ pub fn install(
     let app_id = app.context("`--method download` needs an app id (e.g. `photoshop`)")?;
     let cat = crate::catalog::find(app_id)
         .with_context(|| format!("unknown app '{app_id}' (see `mudhut apps`)"))?;
-    let packages = source.context(
-        "`--method download` needs `--source <staged products dir>` for now \
-         (full auto-download incl. dependencies is the next increment)",
-    )?;
-    if !packages.is_dir() {
-        bail!("--source is not a directory: {}", packages.display());
-    }
 
-    // Resolve the product (lightweight: feed -> manifest -> plan; no payload download).
+    // Resolve the product + its downloadable dependencies (lightweight: no payloads).
     let ledger = Ledger::load(em)?;
     let build = crate::feed::resolve_build(em, &ledger, app_id)?;
-    let manifest = crate::feed::fetch_manifest(em, &ledger, &build)?;
-    let plan = crate::feed::plan(&build, &manifest, "en_US");
+    let (manifest, raw_manifest) = crate::feed::fetch_manifest(em, &ledger, &build)?;
+    let mut plan = crate::feed::plan(&build, &manifest, "en_US");
+    let dep_builds = crate::feed::resolve_dependencies(em, &ledger, &plan.dependencies)?;
 
-    // Write the DriverInfo beside the packages (HDPIM reads it; EsdDirectory is
-    // relative to this dir).
-    let driver_xml = crate::driver::write_driver_xml(&plan, packages)?;
+    // The DriverInfo's dependency list must match what's actually staged: keep only
+    // the deps we resolved + will download (drops the deferred/unresolvable ones).
+    let staged: std::collections::HashSet<String> =
+        dep_builds.iter().map(|b| b.sap.clone()).collect();
+    plan.dependencies.retain(|d| staged.contains(&d.sap));
+
+    // Staging: use a caller-supplied `--source` as-is, else download to a cache dir.
+    let products = match source {
+        Some(s) => {
+            if !s.is_dir() {
+                bail!("--source is not a directory: {}", s.display());
+            }
+            s.to_path_buf()
+        }
+        None => cache_products_dir(&plan)?,
+    };
+
     em.note(&format!(
-        "install {} {} ({}) from {}",
-        cat.name, plan.product_version, plan.sap, packages.display()
+        "install {} {} ({}) + {} dep(s) -> {}",
+        cat.name,
+        plan.product_version,
+        plan.sap,
+        plan.dependencies.len(),
+        products.display()
     ));
 
-    // Discover + run the HDPIM engine.
+    if dry_run {
+        let dep_saps: Vec<&str> = plan.dependencies.iter().map(|d| d.sap.as_str()).collect();
+        em.note(&format!(
+            "(dry run) would download {} package(s) + deps [{}], then HDPIM-install {} into {}",
+            plan.packages.len(),
+            dep_saps.join(", "),
+            cat.name,
+            prefix.display()
+        ));
+        return Ok(());
+    }
+
+    // Download the product + each dependency component (unless staged via --source).
+    if !dry_run && source.is_none() {
+        fs::create_dir_all(&products)
+            .with_context(|| format!("creating {}", products.display()))?;
+        write_application_json(&products, &build.sap, &raw_manifest)?;
+        fetch_plan(em, &ledger, &plan, &products)?;
+        for db in &dep_builds {
+            fetch_component(em, &ledger, db, &products)?;
+        }
+    }
+
+    // Write the DriverInfo beside the packages (EsdDirectory is relative to it).
+    let driver_xml = crate::driver::write_driver_xml(&plan, &products)?;
+
+    // Discover + run the HDPIM engine, then provision.
     let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir()?)?;
-    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, &driver_xml, packages, dry_run)?;
+    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, &driver_xml, &products, dry_run)?;
 
     if dry_run {
         return Ok(());
@@ -78,6 +116,42 @@ pub fn install(
     crate::install::provision(prefix)?;
     em.note(&format!("installed: {}", exe.display()));
     Ok(())
+}
+
+/// Download one component (product or dependency): fetch its manifest, stage its
+/// per-SAP `Application.json`, plan, and download+verify its packages into `products`.
+fn fetch_component(
+    em: &Emitter,
+    ledger: &Ledger,
+    build: &crate::feed::Build,
+    products: &Path,
+) -> Result<()> {
+    let (manifest, raw) = crate::feed::fetch_manifest(em, ledger, build)?;
+    let plan = crate::feed::plan(build, &manifest, "en_US");
+    write_application_json(products, &build.sap, &raw)?;
+    fetch_plan(em, ledger, &plan, products)?;
+    Ok(())
+}
+
+/// Stage `<products>/<SAP>/Application.json` (the raw manifest) — HDPIM's ESD layout.
+fn write_application_json(products: &Path, sap: &str, raw: &str) -> Result<()> {
+    let dir = products.join(sap);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let p = dir.join("Application.json");
+    fs::write(&p, raw).with_context(|| format!("writing {}", p.display()))?;
+    Ok(())
+}
+
+/// Default download-cache products dir: `~/.cache/mudhut/<SAP>-<ver>-<plat>/products`.
+fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .context("no HOME/XDG_CACHE_HOME for the download cache")?;
+    Ok(base
+        .join("mudhut")
+        .join(format!("{}-{}-{}", plan.sap, plan.product_version, plan.platform))
+        .join("products"))
 }
 
 /// Where the shipped `hdpim_host.exe` + `extract_accc_runtime.py` live.

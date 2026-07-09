@@ -127,6 +127,55 @@ pub struct PlannedPackage {
     pub validation_url: String,
 }
 
+/// Dependency components the proven install deliberately trims: Libraries (CCXP),
+/// Camera Raw (ACR), CoreSync (COSY) — peripheral and needing extra (macOS-LaunchAgent
+/// / delta) artifacts not in the win64 ESD set. Matches the known-good Driver_core.xml.
+/// (Re-adding them is a follow-up once their ESD artifacts are resolved.)
+pub const DEFERRED_DEPS: &[&str] = &["CCXP", "ACR", "COSY"];
+
+/// Find the highest-versioned `<product id=sap>` that has a `<languageSet>` for
+/// `platform`, returning (build_guid, product_version, feed_version).
+fn resolve_from_doc(
+    doc: &roxmltree::Document,
+    sap: &str,
+    platform: &str,
+) -> Option<(String, String, String)> {
+    let mut best: Option<(Vec<u32>, roxmltree::Node)> = None;
+    for product in doc.descendants().filter(|n| n.has_tag_name("product")) {
+        if product.attribute("id") != Some(sap) {
+            continue;
+        }
+        // must actually have a build for this platform
+        let has = product
+            .descendants()
+            .filter(|n| n.has_tag_name("platform"))
+            .any(|p| {
+                p.attribute("id") == Some(platform)
+                    && p.descendants().any(|n| n.has_tag_name("languageSet"))
+            });
+        if !has {
+            continue;
+        }
+        let key = version_key(product.attribute("version").unwrap_or("0"));
+        if best.as_ref().map(|(b, _)| key > *b).unwrap_or(true) {
+            best = Some((key, product));
+        }
+    }
+    let (_, product) = best?;
+    let feed_version = product.attribute("version").unwrap_or_default().to_string();
+    let langset = product
+        .descendants()
+        .filter(|n| n.has_tag_name("platform"))
+        .find(|p| p.attribute("id") == Some(platform))
+        .and_then(|p| p.descendants().find(|n| n.has_tag_name("languageSet")))?;
+    let build_guid = langset.attribute("buildGuid")?.to_string();
+    let product_version = langset
+        .attribute("productVersion")
+        .unwrap_or(&feed_version)
+        .to_string();
+    Some((build_guid, product_version, feed_version))
+}
+
 /// Resolve the latest build for `app_id` from the live product feed.
 pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Build> {
     let app = ledger
@@ -140,37 +189,8 @@ pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Buil
         .with_context(|| format!("fetching product feed {url}"))?;
     let doc = roxmltree::Document::parse(&xml).context("parsing product feed XML")?;
 
-    // Highest-versioned <product id=SAP>.
-    let mut best: Option<(Vec<u32>, roxmltree::Node)> = None;
-    for product in doc.descendants().filter(|n| n.has_tag_name("product")) {
-        if product.attribute("id") != Some(app.sap.as_str()) {
-            continue;
-        }
-        let key = version_key(product.attribute("version").unwrap_or("0"));
-        if best.as_ref().map(|(b, _)| key > *b).unwrap_or(true) {
-            best = Some((key, product));
-        }
-    }
-    let (_, product) = best.with_context(|| {
-        format!("app {} ({}) not found in the product feed", app.name, app.sap)
-    })?;
-    let feed_version = product.attribute("version").unwrap_or_default().to_string();
-
-    // <platform id=platform> -> <languageSet buildGuid=… productVersion=…>
-    let langset = product
-        .descendants()
-        .filter(|n| n.has_tag_name("platform"))
-        .find(|p| p.attribute("id") == Some(platform.as_str()))
-        .and_then(|p| p.descendants().find(|n| n.has_tag_name("languageSet")))
-        .with_context(|| format!("no {platform} build for {} in the feed", app.sap))?;
-    let build_guid = langset
-        .attribute("buildGuid")
-        .context("languageSet has no buildGuid")?
-        .to_string();
-    let product_version = langset
-        .attribute("productVersion")
-        .unwrap_or(&feed_version)
-        .to_string();
+    let (build_guid, product_version, feed_version) = resolve_from_doc(&doc, &app.sap, &platform)
+        .with_context(|| format!("app {} ({}) not found in the product feed", app.name, app.sap))?;
 
     Ok(Build {
         app_id: app_id.to_string(),
@@ -182,13 +202,75 @@ pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Buil
     })
 }
 
+/// Resolve the downloadable dependency components for `deps` from the product feed.
+/// The feed is queried for BOTH platforms (deps often ship win32, not win64); each
+/// dep is tried win64 first, then win32. Deps in [`DEFERRED_DEPS`] are skipped, and a
+/// dep not found in the feed is skipped with a note (never fatal). Fetches the feed
+/// once and resolves all deps against it.
+pub fn resolve_dependencies(
+    em: &Emitter,
+    ledger: &Ledger,
+    deps: &[Dependency],
+) -> Result<Vec<Build>> {
+    let wanted: Vec<&Dependency> = deps
+        .iter()
+        .filter(|d| !DEFERRED_DEPS.contains(&d.sap.as_str()))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(vec![]);
+    }
+    let url = ledger.endpoints.products_feed.replace("{platform}", "win32,win64");
+    em.progress("resolve", 20, &format!("dependency feed · {} components", wanted.len()));
+    let xml = http_get_text(&url, &ledger.headers, None)
+        .with_context(|| format!("fetching dependency feed {url}"))?;
+    let doc = roxmltree::Document::parse(&xml).context("parsing dependency feed XML")?;
+
+    let mut builds = Vec::new();
+    for dep in wanted {
+        let mut resolved = None;
+        for platform in ["win64", "win32"] {
+            if let Some((build_guid, product_version, feed_version)) =
+                resolve_from_doc(&doc, &dep.sap, platform)
+            {
+                resolved = Some(Build {
+                    app_id: dep.sap.to_lowercase(),
+                    sap: dep.sap.clone(),
+                    feed_version,
+                    product_version,
+                    platform: platform.to_string(),
+                    build_guid,
+                });
+                break;
+            }
+        }
+        match resolved {
+            Some(b) => {
+                em.progress(
+                    "resolve",
+                    30,
+                    &format!("dep {} {} ({})", b.sap, b.product_version, b.platform),
+                );
+                builds.push(b);
+            }
+            None => em.note(&format!(
+                "dependency {} not in the product feed — skipping",
+                dep.sap
+            )),
+        }
+    }
+    Ok(builds)
+}
+
 /// Fetch the application manifest for a resolved build (JSON, build-guid header).
-pub fn fetch_manifest(em: &Emitter, ledger: &Ledger, build: &Build) -> Result<Manifest> {
+/// Returns the parsed manifest AND its raw JSON (Adobe's per-SAP `Application.json`,
+/// which HDPIM's ESD layout expects staged next to the packages).
+pub fn fetch_manifest(em: &Emitter, ledger: &Ledger, build: &Build) -> Result<(Manifest, String)> {
     let url = &ledger.endpoints.application_manifest;
     em.progress("resolve", 45, &format!("manifest · {} {}", build.sap, build.product_version));
     let body = http_get_text(url, &ledger.headers, Some(&build.build_guid))
         .with_context(|| format!("fetching application manifest {url}"))?;
-    serde_json::from_str(&body).context("parsing application manifest JSON")
+    let manifest = serde_json::from_str(&body).context("parsing application manifest JSON")?;
+    Ok((manifest, body))
 }
 
 /// Compute the download plan for `language` (BCP-ish, e.g. `en_US`). Includes
@@ -271,7 +353,7 @@ pub fn cmd_download(
 ) -> Result<()> {
     let ledger = Ledger::load(em)?;
     let build = resolve_build(em, &ledger, app_id)?;
-    let manifest = fetch_manifest(em, &ledger, &build)?;
+    let (manifest, _raw) = fetch_manifest(em, &ledger, &build)?;
     let mut plan = plan(&build, &manifest, language);
 
     if core_only {
