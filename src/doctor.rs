@@ -39,6 +39,31 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
             detail: "`neutron` not on PATH — install the Neutron runtime first".into() }),
     }
 
+    // Wine for the HDPIM install engine ($MUDHUT_WINE / $NEUTRON_WINE / installed
+    // Neutron runtime / dev tree). `--method download` cannot run without it.
+    match crate::hdpim::resolve_wine() {
+        Some(w) => checks.push(Check { name: "wine", ok: true, required: true,
+            detail: format!("install-engine wine: {}", w.display()) }),
+        None => checks.push(Check { name: "wine", ok: false, required: true,
+            detail: "no wine — run `neutron runtime install` or set $MUDHUT_WINE".into() }),
+    }
+
+    // The shipped tools the download engine drives. Verifies the installed layout
+    // (tools/ next to the binary) is intact, not just that some dir resolved.
+    {
+        let tools = crate::download::repo_tools_dir()
+            .unwrap_or_else(|_| PathBuf::from("tools"));
+        let missing: Vec<&str> = ["hdpim_host.exe", "extract_accc_runtime.py"]
+            .into_iter()
+            .filter(|f| !tools.join(f).is_file())
+            .collect();
+        let ok = missing.is_empty();
+        checks.push(Check { name: "tools", ok, required: true,
+            detail: if ok { format!("install tools at {}", tools.display()) }
+                    else { format!("missing {} under {} — re-run install.sh or set $MUDHUT_TOOLS",
+                                   missing.join(", "), tools.display()) } });
+    }
+
     // Vulkan loader (DXVK / vkd3d-proton present via it).
     let vk = Path::new("/usr/lib/libvulkan.so.1").exists()
         || Path::new("/usr/lib64/libvulkan.so.1").exists()

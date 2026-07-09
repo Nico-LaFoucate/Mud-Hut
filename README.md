@@ -70,10 +70,27 @@ Requires the [Neutron](https://github.com/Nico-LaFoucate/neutron) runtime on `PA
 (`neutron runtime install`). The install engine finds Wine via the Neutron runtime
 or `$MUDHUT_WINE`.
 
-## Building
+## Installing
 
 ```sh
-cargo build --release   # target/release/mudhut
+./install.sh            # build --release + install + put `mudhut` on PATH
+mudhut doctor           # verify the install (wine, tools, host readiness)
+```
+
+`install.sh` installs the release binary to `~/.local/share/mudhut/` with its
+runtime tools (`tools/hdpim_host.exe`, `tools/extract_accc_runtime.py`)
+co-located next to it — the layout the binary resolves first — and symlinks
+`~/.local/bin/mudhut` to it. Override the locations with `MUDHUT_INSTALL_DIR` /
+`MUDHUT_BIN_DIR`; remove everything with `./install.sh --uninstall`.
+
+Don't point PATH at `target/debug/mudhut` — that only reflects the source after
+a manual `cargo build`, so it silently goes stale. `mudhut doctor` confirms the
+installed binary can see its tools and a usable wine.
+
+## Developing
+
+```sh
+cargo build             # target/debug/mudhut (dev tree; finds ../../tools itself)
 cargo test              # unit tests
 ```
 
