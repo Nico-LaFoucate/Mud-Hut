@@ -46,6 +46,11 @@ pub struct Manifest {
     pub sap_code: String,
     #[serde(rename = "ProductVersion", default)]
     pub product_version: String,
+    /// Product base version, e.g. `27.0` for PHSP 27.8 — required by the DriverInfo
+    /// the HDPIM installer consumes. Adobe's manifest usually carries it; if absent
+    /// we derive `<major>.0` from the product version (see `plan`).
+    #[serde(rename = "BaseVersion", default)]
+    pub base_version: String,
     #[serde(rename = "Packages", default)]
     pub packages: Packages,
     /// Shared components the app also needs (ACR, CCXP, …). Shape varies; kept raw
@@ -88,6 +93,8 @@ pub struct DownloadPlan {
     pub sap: String,
     pub name: String,
     pub product_version: String,
+    /// Product base version (e.g. `27.0`) for the DriverInfo `<BaseVersion>`.
+    pub base_version: String,
     pub platform: String,
     pub build_guid: String,
     pub language: String,
@@ -221,11 +228,26 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
         })
         .unwrap_or_default();
 
+    // Product base version for the DriverInfo: prefer the manifest's BaseVersion;
+    // else derive `<major>.0` from the product version (e.g. 27.8.0.13 -> 27.0).
+    let base_version = if !manifest.base_version.is_empty() {
+        manifest.base_version.clone()
+    } else {
+        let major = manifest
+            .product_version
+            .split('.')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("0");
+        format!("{major}.0")
+    };
+
     DownloadPlan {
         app: build.app_id.clone(),
         sap: build.sap.clone(),
         name: manifest.name.clone(),
         product_version: manifest.product_version.clone(),
+        base_version,
         platform: build.platform.clone(),
         build_guid: build.build_guid.clone(),
         language: language.to_string(),
