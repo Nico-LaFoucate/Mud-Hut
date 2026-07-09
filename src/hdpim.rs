@@ -53,15 +53,21 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf) -> Result<Config> {
 }
 
 fn resolve_wine() -> Option<PathBuf> {
-    if let Ok(w) = std::env::var("MUDHUT_WINE") {
-        let p = PathBuf::from(w);
-        if p.is_file() {
-            return Some(p);
+    // 1. Explicit override — MUDHUT_WINE, or NEUTRON_WINE (honor whatever the user
+    //    already pointed neutron at, so the two agree on one wine).
+    for var in ["MUDHUT_WINE", "NEUTRON_WINE"] {
+        if let Ok(w) = std::env::var(var) {
+            let p = PathBuf::from(w);
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
-    // Installed Neutron runtime: ~/.local/share/neutron/runtimes/neutron-wine-*/bin/wine
-    if let Some(home) = std::env::var_os("HOME") {
-        let base = PathBuf::from(home).join(".local/share/neutron/runtimes");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    // 2. Installed Neutron runtime (the shippable path): newest
+    //    ~/.local/share/neutron/runtimes/neutron-wine-*/bin/wine.
+    if let Some(home) = &home {
+        let base = home.join(".local/share/neutron/runtimes");
         if let Ok(rd) = std::fs::read_dir(&base) {
             let mut cands: Vec<PathBuf> = rd
                 .flatten()
@@ -70,6 +76,20 @@ fn resolve_wine() -> Option<PathBuf> {
                 .collect();
             cands.sort();
             if let Some(p) = cands.pop() {
+                return Some(p);
+            }
+        }
+    }
+    // 3. Neutron dev build tree — mirrors neutron's own NEUTRON_WINE_CANDIDATES so a
+    //    dev machine (no runtime release installed yet) resolves the same wine that
+    //    neutron launches the app under. Superseded by (2) once a runtime is installed.
+    if let Some(home) = &home {
+        for rel in [
+            "neutron/dist/wine/bin/wine",
+            "wine-tkg-git/wine-tkg-git/src/wine-tkg-staging-ntsync-git-64-build/wine",
+        ] {
+            let p = home.join(rel);
+            if p.is_file() {
                 return Some(p);
             }
         }
