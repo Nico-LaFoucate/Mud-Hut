@@ -133,12 +133,21 @@ pub fn install(
         return Ok(());
     }
 
-    // Write the DriverInfo OUTSIDE the package (it may be read-only media, e.g.
-    // an extracted ISO). hdpim_host takes the driver path absolute; only the
-    // EsdDirectory entries are relative — to its CWD, which is `products`.
-    let scratch = scratch_dir(&plan)?;
-    fs::create_dir_all(&scratch).with_context(|| format!("creating {}", scratch.display()))?;
-    let driver_xml = crate::driver::write_driver_xml(&plan, &scratch)?;
+    // Write the DriverInfo INTO the products dir, alongside the <SAP>/ payload
+    // dirs — exactly like the download route. HDPIM resolves each <EsdDirectory>
+    // relative to the driver.xml's OWN directory, NOT the process CWD: a driver.xml
+    // written to a scratch dir (even with CWD=products) makes HDPIM fail at start
+    // with error 103 "Error occurred in starting install" — it looks for
+    // <scratch>/PHSP, which doesn't exist. So it must be co-located with the ESD
+    // dirs. (If the package sits on read-only media, copy it to a writable dir
+    // first — the write below surfaces the error.)
+    let driver_xml = crate::driver::write_driver_xml(&plan, &products).with_context(|| {
+        format!(
+            "writing driver.xml into {} — the package dir must be writable \
+             (copy it off read-only media first)",
+            products.display()
+        )
+    })?;
 
     crate::download::hdpim_install_and_provision(
         em, &cat, &driver_xml, &products, prefix, "offline", dry_run,
@@ -185,14 +194,4 @@ fn missing_packages(plan: &DownloadPlan, products: &Path) -> Vec<String> {
             }
         })
         .collect()
-}
-
-/// Scratch dir for the generated driver.xml:
-/// `~/.cache/mudhut/offline-<SAP>-<ver>/`.
-fn scratch_dir(plan: &DownloadPlan) -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .context("no HOME/XDG_CACHE_HOME for the driver.xml scratch dir")?;
-    Ok(base.join("mudhut").join(format!("offline-{}-{}", plan.sap, plan.product_version)))
 }
