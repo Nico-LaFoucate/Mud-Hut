@@ -108,6 +108,14 @@ pub fn cmd_poll(em: &Emitter, request_id: &str, device_id: &str) -> Result<()> {
         em.result(&res);
     } else {
         println!("status: {} (retry {}s)", res.status, res.retry_interval);
+        // The authorization_code is single-use: the exchange above already
+        // consumed it, so a human-mode caller must SEE the token here or it's
+        // lost (re-polling re-exchanges the spent code and returns no token).
+        if let Some(ex) = &res.exchange {
+            if let Some(tok) = ex.get("device_token").and_then(|v| v.as_str()) {
+                println!("device_token: {tok}");
+            }
+        }
     }
     Ok(())
 }
