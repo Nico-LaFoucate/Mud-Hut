@@ -11,11 +11,20 @@
 //! `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
 //! last of which is the terminal `result`/`error`.
 
+mod auth;
 mod catalog;
+mod desktop;
 mod doctor;
+mod download;
+mod driver;
+mod feed;
+mod hdpim;
 mod install;
+mod ledger;
+mod offline;
 mod output;
 mod source;
+mod windows;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,6 +60,45 @@ enum Cmd {
     },
     /// Install one app (or the whole suite) into a Neutron prefix.
     Install(InstallArgs),
+    /// Show the resolved download ledger (endpoints, SAP codes, versions).
+    Ledger,
+    /// Resolve + download an app from Adobe (feed -> buildGuid -> manifest -> plan
+    /// -> fetch+verify). Without --dest, reports the plan and downloads nothing.
+    Download {
+        /// App id (e.g. photoshop). See `mudhut ledger` for the list.
+        app: String,
+        /// Install language to plan for.
+        #[arg(long, default_value = "en_US")]
+        lang: String,
+        /// Download+verify into this dir (preserving Adobe's layout). Omit = plan only.
+        #[arg(long)]
+        dest: Option<PathBuf>,
+        /// Skip non-core packages (e.g. the large AI / Neural-Filter models).
+        #[arg(long)]
+        core_only: bool,
+        /// Only packages whose name contains this substring (selective / testing).
+        #[arg(long)]
+        only: Option<String>,
+    },
+    /// Adobe sign-in (device/QR flow). Collider drives these: `begin` once, then
+    /// `poll` every few seconds until the user has signed in.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Mint the login link + QR. Returns { url, qr, request_id, device_id }.
+    Begin,
+    /// Poll once; runs the token exchange when sign-in completes.
+    Poll {
+        #[arg(long)]
+        request_id: String,
+        #[arg(long)]
+        device_id: String,
+    },
 }
 
 #[derive(Args)]
@@ -62,11 +110,13 @@ struct InstallArgs {
     #[arg(long)]
     suite: bool,
 
-    /// Ingestion method. Only `windows` (copy from a Windows install) is implemented in P1.
+    /// Ingestion method: how to acquire the app bits. All methods feed the same
+    /// stage->provision pipeline; they differ only in acquisition.
     #[arg(long, value_enum, default_value_t = Method::Windows)]
     method: Method,
 
-    /// Source root for the `windows` method (drive_c / mounted C: / copied tree).
+    /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
+    /// copied tree). For `offline`: the Adobe offline package / ISO.
     #[arg(long)]
     source: Option<PathBuf>,
 
@@ -83,10 +133,11 @@ struct InstallArgs {
 enum Method {
     /// Copy from an existing Windows install (implemented).
     Windows,
-    /// Extract from an Adobe offline package / ISO (P2, not yet implemented).
-    Iso,
-    /// Download from Adobe (P3, not yet implemented).
+    /// Install genuine from Adobe via the HDPIM offline engine (decrypt; no
+    /// Set-up.exe/WAM/CC-desktop). Needs `--source <staged products dir>` for now.
     Download,
+    /// Extract from an Adobe offline package / ISO (roadmap 1.4, not yet implemented).
+    Offline,
 }
 
 fn main() -> ExitCode {
@@ -97,10 +148,23 @@ fn main() -> ExitCode {
         Cmd::Doctor { prefix } => doctor::run(&em, prefix.as_deref()),
         Cmd::Apps { source } => catalog::cmd_apps(&em, source.as_deref()),
         Cmd::Install(a) => match a.method {
-            Method::Windows => install::from_windows(&em, &a.prefix, a.source.as_deref(),
-                                                     a.app.as_deref(), a.suite, a.dry_run),
-            Method::Iso => Err(anyhow::anyhow!("--method iso is not implemented yet (P2)")),
-            Method::Download => Err(anyhow::anyhow!("--method download is not implemented yet (P3)")),
+            // download has its own decrypt-install engine (HDPIM), not copy-staging.
+            Method::Download => {
+                download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
+            }
+            // windows/offline: acquire (method-specific) -> stage + provision (shared).
+            Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite)
+                .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
+            Method::Offline => offline::acquire(&em, a.source.as_deref(), a.app.as_deref(), a.suite)
+                .and_then(|acq| install::run(&em, &a.prefix, acq, a.dry_run)),
+        },
+        Cmd::Ledger => ledger::cmd_ledger(&em),
+        Cmd::Download { app, lang, dest, core_only, only } => {
+            feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
+        }
+        Cmd::Auth { action } => match action {
+            AuthAction::Begin => auth::cmd_begin(&em),
+            AuthAction::Poll { request_id, device_id } => auth::cmd_poll(&em, &request_id, &device_id),
         },
     };
 

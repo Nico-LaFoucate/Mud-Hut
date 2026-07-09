@@ -25,18 +25,31 @@ pub struct App {
     /// Prefix of the app's directory under `Program Files/Adobe/` — matched as a
     /// glob-ish prefix so a version bump (2024 vs 2025) still resolves.
     pub dir_prefix: &'static str,
+    /// Freedesktop `Categories=` for the generated `.desktop` launcher.
+    pub categories: &'static str,
+    /// MIME types the app opens (`MimeType=`), for XDG file associations. Only
+    /// well-registered types are listed; empty = launcher only, no associations.
+    pub mime: &'static [&'static str],
 }
 
 /// The compiled-in catalog. Order = display order.
 pub fn apps() -> Vec<App> {
     vec![
-        App { id: "photoshop",    name: "Photoshop",         sap: "PHSP", dir_prefix: "Adobe Photoshop" },
-        App { id: "premiere",     name: "Premiere Pro",      sap: "PPRO", dir_prefix: "Adobe Premiere Pro" },
-        App { id: "aftereffects", name: "After Effects",     sap: "AEFT", dir_prefix: "Adobe After Effects" },
-        App { id: "illustrator",  name: "Illustrator",       sap: "ILST", dir_prefix: "Adobe Illustrator" },
-        App { id: "animate",      name: "Animate",           sap: "FLPR", dir_prefix: "Adobe Animate" },
-        App { id: "lightroom",    name: "Lightroom Classic", sap: "LTRM", dir_prefix: "Adobe Lightroom Classic" },
-        App { id: "mediaencoder", name: "Media Encoder",     sap: "AME",  dir_prefix: "Adobe Media Encoder" },
+        App { id: "photoshop",    name: "Photoshop",         sap: "PHSP", dir_prefix: "Adobe Photoshop",
+              categories: "Graphics;Photography;RasterGraphics;2DGraphics;",
+              mime: &["image/vnd.adobe.photoshop"] },
+        App { id: "premiere",     name: "Premiere Pro",      sap: "PPRO", dir_prefix: "Adobe Premiere Pro",
+              categories: "AudioVideo;Video;AudioVideoEditing;", mime: &[] },
+        App { id: "aftereffects", name: "After Effects",     sap: "AEFT", dir_prefix: "Adobe After Effects",
+              categories: "AudioVideo;Video;AudioVideoEditing;", mime: &[] },
+        App { id: "illustrator",  name: "Illustrator",       sap: "ILST", dir_prefix: "Adobe Illustrator",
+              categories: "Graphics;VectorGraphics;2DGraphics;", mime: &["application/illustrator"] },
+        App { id: "animate",      name: "Animate",           sap: "FLPR", dir_prefix: "Adobe Animate",
+              categories: "Graphics;2DGraphics;", mime: &[] },
+        App { id: "lightroom",    name: "Lightroom Classic", sap: "LTRM", dir_prefix: "Adobe Lightroom Classic",
+              categories: "Graphics;Photography;", mime: &[] },
+        App { id: "mediaencoder", name: "Media Encoder",     sap: "AME",  dir_prefix: "Adobe Media Encoder",
+              categories: "AudioVideo;Video;AudioVideoEditing;", mime: &[] },
     ]
 }
 
