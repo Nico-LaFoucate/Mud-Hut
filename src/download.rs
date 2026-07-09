@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use md5::Md5;
+use sha2::digest::DynDigest;
 use sha2::{Digest, Sha256};
 
 use crate::feed::DownloadPlan;
@@ -181,10 +183,12 @@ fn accc_packages_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join("mudhut-parent-stage/packages"))
 }
 
-/// Per-segment validation info from a package's ValidationURL (TYPE2 = SHA-256).
+/// Per-segment validation info from a package's ValidationURL. TYPE2 = SHA-256
+/// (product payloads); TYPE1 = MD5 (small shared deps).
 struct Validation {
     segment_size: u64,
-    segments: Vec<String>, // hex SHA-256, ordered by segmentNumber
+    segments: Vec<String>, // hex digest, ordered by segmentNumber
+    md5: bool,             // TYPE1 (MD5) vs TYPE2 (SHA-256)
 }
 
 /// Download every package in `plan` into `dest`, preserving Adobe's `Path` layout,
@@ -287,21 +291,26 @@ fn fetch_validation(
     headers: &BTreeMap<String, String>,
     base_url: &str,
 ) -> Result<Validation> {
-    let url = if base_url.contains('?') {
+    // Prefer TYPE2 (SHA-256, the product payloads). Some shared deps only publish
+    // TYPE1 (MD5) — TYPE2 404s for them, so fall back to the base URL.
+    let type2 = if base_url.contains('?') {
         format!("{base_url}&algorithm=TYPE2")
     } else {
         format!("{base_url}?algorithm=TYPE2")
     };
-    let mut req = agent.get(&url);
-    for (k, v) in headers {
-        req = req.set(k, v);
-    }
-    let xml = req
-        .call()
-        .with_context(|| format!("GET {url}"))?
-        .into_string()
-        .context("reading validation body")?;
+    let xml = match get_text(agent, headers, &type2) {
+        Ok(x) => x,
+        Err(_) => get_text(agent, headers, base_url)
+            .with_context(|| format!("GET {base_url} (validation)"))?,
+    };
     let doc = roxmltree::Document::parse(&xml).context("parsing validation XML")?;
+
+    let md5 = doc
+        .descendants()
+        .find(|n| n.has_tag_name("algorithm"))
+        .and_then(|n| n.text())
+        .map(|a| a.trim().eq_ignore_ascii_case("TYPE1"))
+        .unwrap_or(false);
 
     let segment_size = doc
         .descendants()
@@ -324,7 +333,16 @@ fn fetch_validation(
     if segments.is_empty() {
         bail!("validation XML listed no segments");
     }
-    Ok(Validation { segment_size, segments })
+    Ok(Validation { segment_size, segments, md5 })
+}
+
+/// GET a URL with the Adobe headers, returning the body text (error on non-2xx).
+fn get_text(agent: &ureq::Agent, headers: &BTreeMap<String, String>, url: &str) -> Result<String> {
+    let mut req = agent.get(url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    Ok(req.call().with_context(|| format!("GET {url}"))?.into_string()?)
 }
 
 /// Stream one package to `<out>.part`, verifying each segment's SHA-256 against
@@ -354,7 +372,11 @@ fn download_one(
     let label = out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
 
     let seg_size = validation.map(|v| v.segment_size.max(1)).unwrap_or(u64::MAX);
-    let mut hasher = Sha256::new();
+    // TYPE2 (product) = SHA-256; TYPE1 (small deps) = MD5.
+    let mut hasher: Box<dyn DynDigest> = match validation {
+        Some(v) if v.md5 => Box::new(Md5::new()),
+        _ => Box::new(Sha256::new()),
+    };
     let mut seg_filled = 0u64;
     let mut seg_idx = 0usize;
 
@@ -408,7 +430,7 @@ fn check_segment(v: &Validation, idx: usize, got: &str, label: &str) -> Result<(
         .get(idx)
         .with_context(|| format!("{label}: segment {idx} beyond the validation list"))?;
     if !got.eq_ignore_ascii_case(want) {
-        bail!("{label}: segment {idx} SHA-256 mismatch (got {got}, want {want})");
+        bail!("{label}: segment {idx} hash mismatch (got {got}, want {want})");
     }
     Ok(())
 }

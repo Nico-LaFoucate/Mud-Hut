@@ -21,8 +21,10 @@ anyhow = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 # Read-only XML for the Adobe product feed (buildGuid lookup). Pure-Rust, no deps.
 roxmltree = "0.20"
-# SHA-256 verification of downloaded packages (manifest packageHashKey).
+# Download-integrity segment hashing. TYPE2 validation is SHA-256 (the big product
+# payloads); TYPE1 (small shared deps) is MD5 — both via RustCrypto's DynDigest.
 sha2 = "0.10"
+md-5 = "0.10"
 
 [profile.release]
 strip = true

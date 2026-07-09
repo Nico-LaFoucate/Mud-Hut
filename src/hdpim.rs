@@ -104,13 +104,8 @@ pub fn install(
     seed_runtime(em, cfg, prefix)?;
 
     em.progress("install", 45, "HDPIM decrypt + install (this takes minutes)");
-    run_hdpim(em, cfg, prefix, driver_xml, packages_dir)?;
-
+    let exe = run_hdpim(em, cfg, prefix, app_name, driver_xml, packages_dir)?;
     em.progress("verify", 95, "checking the decrypted binary");
-    // HDPIM installs to Adobe's marketing-year dir (e.g. "Adobe Photoshop 2026") —
-    // scan for it rather than guessing the year.
-    let exe = find_installed_exe(prefix, app_name)
-        .with_context(|| format!("no installed '{app_name}' exe found after HDPIM install"))?;
     verify(&exe)?;
     em.progress("install", 100, "installed");
     Ok(exe)
@@ -209,22 +204,50 @@ fn run_hdpim(
     em: &Emitter,
     cfg: &Config,
     prefix: &Path,
+    app_name: &str,
     driver_xml: &Path,
     packages_dir: &Path,
-) -> Result<()> {
+) -> Result<PathBuf> {
+    use std::time::{Duration, Instant};
     // hdpim_host resolves EsdDirectory relative to its CWD (the driver.xml dir).
+    // HDPIM's install runs async and the host otherwise pumps its full wait; we stop
+    // it EARLY once the decrypted PE appears, so the CLI doesn't idle for ~30 min.
     let driver_win = to_z_path(driver_xml);
-    wine(cfg, prefix, &[])
+    let mut child = wine(cfg, prefix, &[])
         .arg(&cfg.hdpim_host)
         .arg(HDPIM_WIN)
         .arg(&driver_win)
-        .arg("1800") // pump seconds; HDPIM install is async
+        .arg("2400") // pump-second ceiling
         .current_dir(packages_dir)
         .env("WINEDLLOVERRIDES", "mshtml=d")
-        .status_ok("hdpim_host")?;
-    em.progress("install", 90, "HDPIM finished");
+        .spawn()
+        .context("spawning hdpim_host")?;
+
+    let deadline = Instant::now() + Duration::from_secs(2400);
+    let exe = loop {
+        if let Some(status) = child.try_wait().context("polling hdpim_host")? {
+            // Host exited on its own — the install must have produced the exe.
+            break find_installed_exe(prefix, app_name).with_context(|| {
+                format!("hdpim_host exited ({status}) but no installed '{app_name}' exe found")
+            })?;
+        }
+        if let Some(exe) = find_installed_exe(prefix, app_name) {
+            if verify(&exe).is_ok() {
+                em.progress("install", 90, "installed — stopping host");
+                let _ = child.kill();
+                let _ = child.wait();
+                break exe;
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("HDPIM install timed out (no decrypted exe after 2400s)");
+        }
+        std::thread::sleep(Duration::from_secs(10));
+    };
     let _ = wineserver(cfg, prefix, "-k");
-    Ok(())
+    Ok(exe)
 }
 
 /// The install succeeded only if the app exe is a real decrypted PE (not the ~1 MB
