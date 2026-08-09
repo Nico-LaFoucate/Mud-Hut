@@ -34,9 +34,13 @@ pub struct Config {
 
 /// Discover the engine's tools. `repo_tools` is the dir holding the shipped
 /// `hdpim_host.exe` + `extract_accc_runtime.py` (Mud Hut's `tools/`). Wine is taken
-/// from `$MUDHUT_WINE`, else the installed Neutron runtime, else the dev build tree.
-pub fn discover(repo_tools: &Path, accc_packages: PathBuf) -> Result<Config> {
-    let wine = resolve_wine().context(
+/// from `$MUDHUT_WINE`, else the runtime the target `prefix` is stamped for, else the
+/// newest numeric Neutron runtime, else the dev build tree.
+///
+/// Pass the target prefix whenever it is known: installing into an existing prefix with
+/// a mismatched wine wineboot-clobbers its patched natives.
+pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>) -> Result<Config> {
+    let wine = resolve_wine(prefix).context(
         "no wine found — set $MUDHUT_WINE or install the Neutron runtime (`neutron runtime install`)",
     )?;
     let hdpim_host = repo_tools.join("hdpim_host.exe");
@@ -52,7 +56,7 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf) -> Result<Config> {
     Ok(Config { wine, hdpim_host, extractor, accc_packages })
 }
 
-pub(crate) fn resolve_wine() -> Option<PathBuf> {
+pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
     // 1. Explicit override — MUDHUT_WINE, or NEUTRON_WINE (honor whatever the user
     //    already pointed neutron at, so the two agree on one wine).
     for var in ["MUDHUT_WINE", "NEUTRON_WINE"] {
@@ -64,18 +68,38 @@ pub(crate) fn resolve_wine() -> Option<PathBuf> {
         }
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    // 2. Installed Neutron runtime (the shippable path): newest
-    //    ~/.local/share/neutron/runtimes/neutron-wine-*/bin/wine.
+    // 2. If we know the target prefix, the ONLY correct answer is the runtime that
+    //    prefix is stamped for. Wine reruns its whole wine.inf install whenever the
+    //    mtime of <wine>/share/wine/wine.inf differs from <prefix>/.update-timestamp,
+    //    and setup_prefix() then runs `wineboot --init` unconditionally — so resolving
+    //    any other build reinstalls system32 and reverts the prefix's patched natives.
+    //    Same rule as neutron's preserved-fixes/harnesses/runtime_for_prefix.sh.
+    if let (Some(home), Some(prefix)) = (&home, prefix) {
+        if let Some(p) = runtime_for_prefix(home, prefix) {
+            return Some(p);
+        }
+    }
+    // 3. Installed Neutron runtime, newest by NUMERIC version.
+    //    ⚠️ This used to be `cands.sort(); cands.pop()` — a lexicographic sort over full
+    //    paths, which ranked "neutron-wine-11.10-perf-test" above "neutron-wine-11.10-45"
+    //    because "p" > "4". On the dev box that selected a July build marked TEST ONLY,
+    //    NEVER SHIP (RUNTIMES.md) to run against a prefix stamped for 11.10-45.
+    //    Non-numeric suffixes (perf-test, gpufix, diag, overhang…) are experiment builds
+    //    and are now excluded entirely rather than merely ranked.
     if let Some(home) = &home {
         let base = home.join(".local/share/neutron/runtimes");
         if let Ok(rd) = std::fs::read_dir(&base) {
-            let mut cands: Vec<PathBuf> = rd
+            let mut cands: Vec<((u32, u32, u32), PathBuf)> = rd
                 .flatten()
-                .map(|e| e.path().join("bin/wine"))
-                .filter(|p| p.is_file())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let v = parse_runtime_version(&name)?;
+                    let wine = e.path().join("bin/wine");
+                    wine.is_file().then_some((v, wine))
+                })
                 .collect();
-            cands.sort();
-            if let Some(p) = cands.pop() {
+            cands.sort_by(|a, b| a.0.cmp(&b.0));
+            if let Some((_, p)) = cands.pop() {
                 return Some(p);
             }
         }
@@ -91,6 +115,44 @@ pub(crate) fn resolve_wine() -> Option<PathBuf> {
             let p = home.join(rel);
             if p.is_file() {
                 return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Parse `neutron-wine-<major>.<minor>-<rev>` into a comparable tuple. Returns None for
+/// experiment builds whose revision is not purely numeric (`-perf-test`, `-gpufix`,
+/// `-13-overhang2`, …) so they can never be auto-selected.
+fn parse_runtime_version(dir_name: &str) -> Option<(u32, u32, u32)> {
+    let rest = dir_name.strip_prefix("neutron-wine-")?;
+    let (ver, rev) = rest.rsplit_once('-')?;
+    let (major, minor) = ver.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?, rev.parse().ok()?))
+}
+
+/// The installed runtime whose `share/wine/wine.inf` mtime equals the integer in
+/// `<prefix>/.update-timestamp` — i.e. the build this prefix was last booted on.
+/// Running any other build against it triggers a full `wine.inf` reinstall.
+fn runtime_for_prefix(home: &Path, prefix: &Path) -> Option<PathBuf> {
+    // The stamp file is CRLF-terminated; keep digits only.
+    let raw = std::fs::read_to_string(prefix.join(".update-timestamp")).ok()?;
+    let stamp: u64 = raw.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
+
+    for entry in std::fs::read_dir(home.join(".local/share/neutron/runtimes")).ok()?.flatten() {
+        let meta = match std::fs::metadata(entry.path().join("share/wine/wine.inf")) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let secs = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        if secs == Some(stamp) {
+            let wine = entry.path().join("bin/wine");
+            if wine.is_file() {
+                return Some(wine);
             }
         }
     }

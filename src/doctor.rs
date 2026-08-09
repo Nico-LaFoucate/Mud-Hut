@@ -41,7 +41,7 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
 
     // Wine for the HDPIM install engine ($MUDHUT_WINE / $NEUTRON_WINE / installed
     // Neutron runtime / dev tree). `--method download` cannot run without it.
-    match crate::hdpim::resolve_wine() {
+    match crate::hdpim::resolve_wine(None) {
         Some(w) => checks.push(Check { name: "wine", ok: true, required: true,
             detail: format!("install-engine wine: {}", w.display()) }),
         None => checks.push(Check { name: "wine", ok: false, required: true,
