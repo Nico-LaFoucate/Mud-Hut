@@ -34,8 +34,8 @@ pub struct Config {
 
 /// Discover the engine's tools. `repo_tools` is the dir holding the shipped
 /// `hdpim_host.exe` + `extract_accc_runtime.py` (Mud Hut's `tools/`). Wine is taken
-/// from `$MUDHUT_WINE`, else the runtime the target `prefix` is stamped for, else the
-/// newest numeric Neutron runtime, else the dev build tree.
+/// from `$MUDHUT_WINE`, else the runtime the target `prefix` is stamped for, else whatever
+/// `neutron runtime which` reports, else the newest numeric Neutron runtime, else the dev tree.
 ///
 /// Pass the target prefix whenever it is known: installing into an existing prefix with
 /// a mismatched wine wineboot-clobbers its patched natives.
@@ -54,6 +54,25 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>
         bail!("ACCCx runtime packages dir not found: {}", accc_packages.display());
     }
     Ok(Config { wine, hdpim_host, extractor, accc_packages })
+}
+
+/// Ask `neutron runtime which` for the wine the CLI would launch with. None if the CLI is
+/// missing, older than that subcommand, or answers with a path that is not there.
+///
+/// ⛔ Parsed without a JSON dependency: the field is a plain `"wine": "<path>"`. If that output
+/// shape ever changes this returns None and resolution falls through to the old behaviour, which
+/// is the safe direction -- Mud Hut must never fail to install because a helper changed format.
+fn neutron_runtime_which() -> Option<PathBuf> {
+    let out = Command::new("neutron").args(["--json", "runtime", "which"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let key = "\"wine\": \"";
+    let start = text.find(key)? + key.len();
+    let end = text[start..].find('"')? + start;
+    let p = PathBuf::from(&text[start..end]);
+    p.is_file().then_some(p)
 }
 
 pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
@@ -78,6 +97,17 @@ pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
         if let Some(p) = runtime_for_prefix(home, prefix) {
             return Some(p);
         }
+    }
+    // 2b. ⭐ ASK THE NEUTRON CLI. For a NEW prefix (no stamp yet) there is nothing to derive the
+    //     runtime from, and "newest installed" is only right by coincidence: it agrees with the
+    //     CLI on a machine where the newest runtime is also the pinned one, and disagrees the
+    //     moment a newer runtime is installed than the drop pinned. Mud Hut would then stamp a
+    //     brand-new prefix for the newer build, and every `neutron launch` would refuse it --
+    //     the worst possible first-run experience, raised by the build tester 2026-08-26.
+    //     One authority for "which wine does this machine use": the CLI. Ask it.
+    //     Best-effort: if `neutron` is absent or too old for `runtime which`, fall through.
+    if let Some(w) = neutron_runtime_which() {
+        return Some(w);
     }
     // 3. Installed Neutron runtime, newest by NUMERIC version.
     //    ⚠️ This used to be `cands.sort(); cands.pop()` — a lexicographic sort over full
