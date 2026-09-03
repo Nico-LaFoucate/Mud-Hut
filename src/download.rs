@@ -124,7 +124,7 @@ pub(crate) fn hdpim_install_and_provision(
     dry_run: bool,
 ) -> Result<()> {
     let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir()?, Some(prefix))?;
-    let exe = crate::hdpim::install(em, &cfg, prefix, cat.name, driver_xml, products, dry_run)?;
+    let exe = crate::hdpim::install(em, &cfg, prefix, cat, driver_xml, products, dry_run)?;
 
     if dry_run {
         return Ok(());

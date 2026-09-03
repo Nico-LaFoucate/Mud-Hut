@@ -197,17 +197,18 @@ pub fn install(
     em: &Emitter,
     cfg: &Config,
     prefix: &Path,
-    app_name: &str, // e.g. "Photoshop" -> dir "Adobe Photoshop <year>", exe "<App>.exe"
+    cat: &crate::catalog::App,
     driver_xml: &Path,
     packages_dir: &Path,
     dry_run: bool,
 ) -> Result<PathBuf> {
     if dry_run {
         em.note(&format!(
-            "would install {app_name} into {} via HDPIM (prereqs + ACC seed + hdpim_host)",
+            "would install {} into {} via HDPIM (prereqs + ACC seed + hdpim_host)",
+            cat.name,
             prefix.display()
         ));
-        return Ok(prefix.join("drive_c/Program Files/Adobe").join(format!("Adobe {app_name} <year>")));
+        return Ok(prefix.join("drive_c/Program Files/Adobe").join(format!("Adobe {} <year>", cat.name)));
     }
 
     em.progress("prereqs", 5, "prefix init + Win11 spoof + VC++ runtime");
@@ -217,7 +218,7 @@ pub fn install(
     seed_runtime(em, cfg, prefix)?;
 
     em.progress("install", 45, "HDPIM decrypt + install (this takes minutes)");
-    let exe = run_hdpim(em, cfg, prefix, app_name, driver_xml, packages_dir)?;
+    let exe = run_hdpim(em, cfg, prefix, cat, driver_xml, packages_dir)?;
     em.progress("verify", 95, "checking the decrypted binary");
     verify(&exe)?;
     em.progress("install", 100, "installed");
@@ -293,26 +294,15 @@ fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
+fn find_installed_exe(prefix: &Path, cat: &crate::catalog::App) -> Option<PathBuf> {
     let adobe = prefix.join("drive_c/Program Files/Adobe");
-    let dir_prefix = format!("Adobe {app_name}");
+    let dir_prefix = format!("Adobe {}", cat.name);
 
-    // ⛔ The main executable's name is NOT derivable from the app name by one rule.
-    //    Photoshop ships "Photoshop.exe"; Premiere Pro ships "Adobe Premiere Pro.exe".
-    //    The old code took the LAST WORD of the app name -- which yields "Pro.exe"
-    //    for Premiere. It therefore never found a perfectly good install, spun the
-    //    10s poll until the 2400s deadline, and reported a timeout on the decrypt
-    //    step that had actually finished. Photoshop worked only by coincidence.
-    //
-    //    Try the real-world spellings in order, then fall back to the largest .exe
-    //    in the directory, which is the main binary for every Adobe app (they are
-    //    hundreds of MB next to small helpers like dynamiclinkmanager.exe).
-    let candidates = [
-        format!("Adobe {app_name}.exe"), // Adobe Premiere Pro.exe
-        format!("{app_name}.exe"),       // Photoshop.exe
-        format!("{}.exe", app_name.replace(' ', "")),
-    ];
-
+    // The catalog carries the exact executable, because it is NOT derivable from
+    // the app name and is not always at the top level: After Effects ships
+    // "Support Files/AfterFX.exe", Illustrator sits three levels down. Guessing it
+    // (the old code took the last word of the app name) made a finished Premiere
+    // look like a timeout, and no depth of top-level search would ever find AE.
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&adobe)
         .into_iter()
         .flatten()
@@ -327,32 +317,79 @@ fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
         .collect();
     dirs.sort();
 
-    // Newest install dir last (e.g. "... 2026" after "... 2025").
-    for dir in dirs.iter().rev() {
-        for c in &candidates {
-            let p = dir.join(c);
-            if p.is_file() {
-                return Some(p);
+    for dir in dirs.iter().rev() {          // newest install dir first ("… 2026")
+        let p = dir.join(cat.exe);
+        if p.is_file() {
+            return Some(p);
+        }
+        // Adobe has moved this between releases before, so fall back to a bounded
+        // search for the same FILE NAME rather than failing on a moved directory.
+        if let Some(name) = Path::new(cat.exe).file_name() {
+            if let Some(found) = find_named(dir, name, 4) {
+                return Some(found);
             }
         }
-        // Fallback: the largest top-level .exe.
-        let biggest = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("exe"))
-                        == Some(true)
-            })
-            .filter_map(|p| std::fs::metadata(&p).ok().map(|m| (m.len(), p)))
-            .max_by_key(|(len, _)| *len);
-        if let Some((len, p)) = biggest {
-            // Same floor verify() uses, so a helper exe can never be mistaken for
-            // the app when the real one has not been decrypted yet.
-            if len >= 50_000_000 {
-                return Some(p);
+    }
+    None
+}
+
+/// Breadth-first search for `name` under `root`, at most `max_depth` levels down.
+/// Megabytes written into the app's install directory so far (best-effort).
+fn dir_size_mb(prefix: &Path, cat: &crate::catalog::App) -> u64 {
+    fn walk(d: &Path, budget: &mut u32) -> u64 {
+        if *budget == 0 {
+            return 0;
+        }
+        let mut total = 0;
+        let Ok(rd) = std::fs::read_dir(d) else { return 0 };
+        for e in rd.flatten() {
+            *budget = budget.saturating_sub(1);
+            if *budget == 0 {
+                break;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => total += walk(&e.path(), budget),
+                Ok(t) if t.is_file() => total += e.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => {}
+            }
+        }
+        total
+    }
+    let adobe = prefix.join("drive_c/Program Files/Adobe");
+    let want = format!("Adobe {}", cat.name);
+    let mut budget = 60_000u32;      // bounded: this runs every 10s during install
+    std::fs::read_dir(&adobe)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| {
+            d.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(&want)).unwrap_or(false)
+        })
+        .map(|d| walk(&d, &mut budget))
+        .sum::<u64>()
+        / 1_048_576
+}
+
+fn find_named(root: &Path, name: &std::ffi::OsStr, max_depth: u32) -> Option<PathBuf> {
+    let mut q = std::collections::VecDeque::from([(root.to_path_buf(), 0u32)]);
+    let mut seen = 0u32;
+    while let Some((dir, depth)) = q.pop_front() {
+        let hit = dir.join(name);
+        if hit.is_file() {
+            return Some(hit);
+        }
+        if depth >= max_depth || seen > 4096 {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 4096 {
+                break;
+            }
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                q.push_back((e.path(), depth + 1));
             }
         }
     }
@@ -452,7 +489,7 @@ fn run_hdpim(
     em: &Emitter,
     cfg: &Config,
     prefix: &Path,
-    app_name: &str,
+    cat: &crate::catalog::App,
     driver_xml: &Path,
     packages_dir: &Path,
 ) -> Result<PathBuf> {
@@ -483,15 +520,16 @@ fn run_hdpim(
     }
     let mut child = cmd.spawn().context("spawning hdpim_host")?;
 
-    let deadline = Instant::now() + Duration::from_secs(2400);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(2400);
     let exe = loop {
         if let Some(status) = child.try_wait().context("polling hdpim_host")? {
             // Host exited on its own — the install must have produced the exe.
-            break find_installed_exe(prefix, app_name).with_context(|| {
-                format!("hdpim_host exited ({status}) but no installed '{app_name}' exe found")
+            break find_installed_exe(prefix, cat).with_context(|| {
+                format!("hdpim_host exited ({status}) but no installed {} exe found", cat.name)
             })?;
         }
-        if let Some(exe) = find_installed_exe(prefix, app_name) {
+        if let Some(exe) = find_installed_exe(prefix, cat) {
             if verify(&exe).is_ok() {
                 em.progress("install", 90, "installed — stopping host");
                 let _ = child.kill();
@@ -504,6 +542,25 @@ fn run_hdpim(
             let _ = child.wait();
             bail!("HDPIM install timed out (no decrypted exe after 2400s)");
         }
+        // Report progress DURING the decrypt. Without this the CLI emitted nothing
+        // between "seed" (25%) and "installed" (90%), so Collider's bar sat frozen
+        // at 25% for the entire install -- 12+ minutes for After Effects -- and the
+        // only reasonable reading was that it had hung. It had not.
+        //
+        // There is no honest completion percentage available (HDPIM reports none,
+        // and expanded size is not derivable from the compressed payloads), so the
+        // bar ramps asymptotically toward 85% with elapsed time and never claims to
+        // finish, while the MESSAGE carries the real, checkable signal: megabytes
+        // written so far. A stalled install shows a frozen MB count with a bar that
+        // is still moving, which is the honest way round.
+        let secs = Instant::now().saturating_duration_since(started).as_secs();
+        let mb = dir_size_mb(prefix, cat);
+        let pct = 25u8 + (60.0 * (1.0 - (-(secs as f64) / 420.0).exp())) as u8;
+        em.progress(
+            "install",
+            pct.min(85),
+            &format!("HDPIM decrypt · {mb} MB written · {}m{:02}s elapsed", secs / 60, secs % 60),
+        );
         std::thread::sleep(Duration::from_secs(10));
     };
     let _ = wineserver(cfg, prefix, "-k");
@@ -515,7 +572,14 @@ fn run_hdpim(
 fn verify(exe: &Path) -> Result<()> {
     let meta = std::fs::metadata(exe)
         .with_context(|| format!("installed exe not found: {}", exe.display()))?;
-    if meta.len() < 50_000_000 {
+    // ⛔ Do NOT gate on a big size. This floor was 50 MB, calibrated on Photoshop
+    // (269 MB) and Premiere (836 MB) -- but After Effects' AfterFX.exe is 5.7 MB
+    // (AE is mostly DLLs and plugins), so a perfectly good install would have been
+    // rejected as "decrypt likely failed" even once it was found. What actually
+    // distinguishes a decrypted binary from an encrypted or truncated payload is
+    // that it PARSES as a PE, which is checked below; the floor only needs to
+    // exclude a stub.
+    if meta.len() < 1_000_000 {
         bail!(
             "installed exe suspiciously small ({} bytes) — decrypt likely failed: {}",
             meta.len(),
