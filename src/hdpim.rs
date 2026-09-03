@@ -226,11 +226,94 @@ pub fn install(
 
 /// Find the installed app exe under `Program Files\Adobe\Adobe <app_name> <year>\`.
 /// Returns the highest-year match that exists.
+/// An `hdpim_host` already running against `prefix`, as (pid, owner pid).
+///
+/// A second decrypt into the same prefix corrupts the install, and an orphan
+/// left by a killed run silently blocks or breaks the next attempt. Neither is
+/// detectable from inside our own process, so read /proc.
+fn hosts_in_prefix(prefix: &Path) -> Vec<(i32, i32)> {
+    let want = format!("WINEPREFIX={}", prefix.display());
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    for e in rd.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+            continue;
+        };
+        let name = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("Name:")).map(|l| l.to_string()))
+            .unwrap_or_default();
+        if !name.contains("hdpim_host") {
+            continue;
+        }
+        let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else { continue };
+        if !env.split(|b| *b == 0).any(|v| v == want.as_bytes()) {
+            continue;
+        }
+        let ppid = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("PPid:"))
+                    .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
+            })
+            .unwrap_or(1);
+        out.push((pid, ppid));
+    }
+    out
+}
+
+/// Refuse to start a second decrypt into a prefix, and clear orphaned ones.
+///
+/// If the host's owner is a live mudhut, another install is genuinely in flight
+/// and starting ours would interleave two decrypts into the same directories —
+/// that is refused. If the owner is gone, the host is an orphan from a killed
+/// run: it is killed here so it cannot corrupt this install or be mistaken by
+/// the user for the one they should not touch.
+fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
+    for (pid, ppid) in hosts_in_prefix(prefix) {
+        let owner_alive = std::fs::read_to_string(format!("/proc/{ppid}/comm"))
+            .map(|c| c.trim() == "mudhut")
+            .unwrap_or(false);
+        if owner_alive {
+            bail!(
+                "another Mud Hut install is already running into this prefix \
+                 (hdpim_host pid {pid}, started by mudhut pid {ppid}).\n\
+                 Two decrypts into one prefix corrupt each other. Wait for it to \
+                 finish, or stop that install first."
+            );
+        }
+        em.note(&format!(
+            "clearing an orphaned installer host from a previous run (pid {pid})"
+        ));
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    Ok(())
+}
+
 fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
     let adobe = prefix.join("drive_c/Program Files/Adobe");
     let dir_prefix = format!("Adobe {app_name}");
-    let exe_name = format!("{}.exe", app_name.split_whitespace().last().unwrap_or(app_name));
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(&adobe)
+
+    // ⛔ The main executable's name is NOT derivable from the app name by one rule.
+    //    Photoshop ships "Photoshop.exe"; Premiere Pro ships "Adobe Premiere Pro.exe".
+    //    The old code took the LAST WORD of the app name -- which yields "Pro.exe"
+    //    for Premiere. It therefore never found a perfectly good install, spun the
+    //    10s poll until the 2400s deadline, and reported a timeout on the decrypt
+    //    step that had actually finished. Photoshop worked only by coincidence.
+    //
+    //    Try the real-world spellings in order, then fall back to the largest .exe
+    //    in the directory, which is the main binary for every Adobe app (they are
+    //    hundreds of MB next to small helpers like dynamiclinkmanager.exe).
+    let candidates = [
+        format!("Adobe {app_name}.exe"), // Adobe Premiere Pro.exe
+        format!("{app_name}.exe"),       // Photoshop.exe
+        format!("{}.exe", app_name.replace(' ', "")),
+    ];
+
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&adobe)
         .into_iter()
         .flatten()
         .flatten()
@@ -241,11 +324,39 @@ fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
                 .map(|n| n.starts_with(&dir_prefix))
                 .unwrap_or(false)
         })
-        .map(|d| d.join(&exe_name))
-        .filter(|p| p.is_file())
         .collect();
-    hits.sort();
-    hits.pop()
+    dirs.sort();
+
+    // Newest install dir last (e.g. "... 2026" after "... 2025").
+    for dir in dirs.iter().rev() {
+        for c in &candidates {
+            let p = dir.join(c);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        // Fallback: the largest top-level .exe.
+        let biggest = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("exe"))
+                        == Some(true)
+            })
+            .filter_map(|p| std::fs::metadata(&p).ok().map(|m| (m.len(), p)))
+            .max_by_key(|(len, _)| *len);
+        if let Some((len, p)) = biggest {
+            // Same floor verify() uses, so a helper exe can never be mistaken for
+            // the app when the real one has not been decrypted yet.
+            if len >= 50_000_000 {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + VC++ redists.
@@ -335,15 +446,27 @@ fn run_hdpim(
     // HDPIM's install runs async and the host otherwise pumps its full wait; we stop
     // it EARLY once the decrypted PE appears, so the CLI doesn't idle for ~30 min.
     let driver_win = to_z_path(driver_xml);
-    let mut child = wine(cfg, prefix, &[])
-        .arg(&cfg.hdpim_host)
+    // Refuse a second decrypt into this prefix; clear an orphan from a killed run.
+    clear_orphan_hosts(em, prefix)?;
+
+    let mut cmd = wine(cfg, prefix, &[]);
+    cmd.arg(&cfg.hdpim_host)
         .arg(HDPIM_WIN)
         .arg(&driver_win)
         .arg("2400") // pump-second ceiling
         .current_dir(packages_dir)
-        .env("WINEDLLOVERRIDES", "mshtml=d")
-        .spawn()
-        .context("spawning hdpim_host")?;
+        .env("WINEDLLOVERRIDES", "mshtml=d");
+    // Tie the host's life to ours: if Mud Hut is killed, the decrypt must not keep
+    // running against a prefix nobody is supervising. Covers SIGKILL of the parent,
+    // which no cleanup code of ours could handle.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().context("spawning hdpim_host")?;
 
     let deadline = Instant::now() + Duration::from_secs(2400);
     let exe = loop {

@@ -408,6 +408,7 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "libc",
  "md-5",
  "roxmltree",
  "serde",

@@ -28,6 +28,9 @@ md-5 = "0.10"
 # Decode the app icon (neutron emits it as a data:image/png;base64 URI) for the
 # generated .desktop launcher.
 base64 = "0.22"
+# PR_SET_PDEATHSIG only: tie the installer host's lifetime to ours so killing
+# Mud Hut can never leave a decrypt running against a half-installed prefix.
+libc = "0.2"
 
 [profile.release]
 strip = true
