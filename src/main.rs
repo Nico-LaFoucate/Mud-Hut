@@ -180,7 +180,11 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            em.error(&e.to_string());
+            // `{:#}` renders the whole anyhow chain ("context: cause: cause"),
+            // not just the outermost context. Without it the actual reason — the
+            // OS error, wine's own complaint — is dropped, and Collider shows the
+            // user a message with nothing actionable in it.
+            em.error(&format!("{e:#}"));
             ExitCode::FAILURE
         }
     }

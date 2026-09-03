@@ -249,6 +249,19 @@ fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
 
 /// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + VC++ redists.
 fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
+    // Wine does not create the prefix path — it chdir()s into it, and a missing
+    // directory makes `wineboot --init` exit 1 with nothing but
+    // "wine: chdir to <path> : No such file or directory". Create it here so the
+    // common case just works, and so anything left (a permission problem, a file
+    // in the way) reports as itself rather than as an opaque wineboot failure.
+    if !prefix.exists() {
+        std::fs::create_dir_all(prefix).with_context(|| {
+            format!("creating the prefix directory {}", prefix.display())
+        })?;
+    } else if !prefix.is_dir() {
+        bail!("--prefix is not a directory: {}", prefix.display());
+    }
+
     // Init: suppress the interactive Mono/Gecko installer dialog (it blocks headless).
     wine(cfg, prefix, &["wineboot", "--init"])
         .env("WINEDLLOVERRIDES", "mscoree,mshtml=d")
@@ -424,9 +437,32 @@ trait CommandExt {
 }
 impl CommandExt for Command {
     fn status_ok(&mut self, what: &str) -> Result<()> {
-        let st = self.status().with_context(|| format!("spawning {what}"))?;
-        if !st.success() {
-            bail!("{what} failed ({st})");
+        // Capture rather than inherit: these commands are short, and their output
+        // is noise UNTIL one fails, at which point it is the only thing that
+        // explains why. Inheriting sent it to the parent's stderr, which under
+        // Collider is discarded — leaving the user with a bare
+        // "wineboot --init failed (exit status: 1)" and nothing to act on.
+        let out = self.output().with_context(|| format!("spawning {what}"))?;
+        if !out.status.success() {
+            // Wine's real complaint is at the END of stderr, after the driver noise.
+            let err = String::from_utf8_lossy(&out.stderr);
+            let tail: Vec<&str> = err
+                .lines()
+                .map(str::trim)
+                .filter(|l| {
+                    !l.is_empty()
+                        // MESA/EGL chatter is emitted on healthy runs too.
+                        && !l.contains("MESA-EGL")
+                        && !l.starts_with("pci id for fd")
+                })
+                .rev()
+                .take(8)
+                .collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            if tail.is_empty() {
+                bail!("{what} failed ({}) — no error output", out.status);
+            }
+            bail!("{what} failed ({}):\n{}", out.status, tail.join("\n"));
         }
         Ok(())
     }
