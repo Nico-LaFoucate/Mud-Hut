@@ -11,15 +11,11 @@
 //! uses ([`crate::download::hdpim_install_and_provision`]) — offline packages
 //! are encrypted, so they cannot be copy-staged like `windows`.
 //!
-//! `--source` must be an already-extracted, **WRITABLE** directory holding the
-//! `<SAP>/` payload dirs (or its parent with a `products/` child).
-//!
-//! The writability is the real constraint, not the container format: HDPIM
-//! resolves each `<EsdDirectory>` relative to the driver XML's OWN directory,
-//! so `Driver_core.xml` has to be written INTO the package next to the payload
-//! dirs (see the comment at the write site below). Mounting an ISO read-only
-//! therefore does NOT help — it fails the same way a scratch dir does. Any
-//! read-only source has to be copied to writable storage first.
+//! `--source` is a directory holding the `<SAP>/` payload dirs (or its parent
+//! with a `products/` child). It does **not** need to be writable: a read-only
+//! source (a mounted ISO, a read-only share) is detected and the driver XML is
+//! written to a scratch dir with absolute `<EsdDirectory>` paths instead, so a
+//! ~10 GiB copy is never required. Verified against a real HDPIM install.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,14 +56,16 @@ pub fn install(
         source.context("--source is required for --method offline (the package dir)")?;
     if source.is_file() {
         bail!(
-            "--source points at a file ({}), but --method offline needs a directory.\n\
+            "--source points at a file ({0}), but --method offline needs a directory.\n\
              \n\
-             Extract it to writable storage and point --source at the dir holding the\n\
-             <SAP>/ payload dirs (e.g. PHSP/Application.json), or its parent.\n\
+             If it is an ISO, MOUNT it and point --source at the mount — it does not\n\
+             need to be writable and nothing is copied:\n\
              \n\
-             Note: mounting an ISO instead of extracting it will NOT work. The install\n\
-             writes Driver_core.xml into the package dir (HDPIM resolves <EsdDirectory>\n\
-             relative to that XML's own directory), so the package must be WRITABLE.",
+             \x20   udisksctl loop-setup -r -f {0}\n\
+             \x20   # then --source <mountpoint>[/products]\n\
+             \n\
+             (Your file manager mounting it works just as well.) For a zip, extract it\n\
+             and point --source at the dir holding the <SAP>/ payload dirs.",
             source.display()
         );
     }

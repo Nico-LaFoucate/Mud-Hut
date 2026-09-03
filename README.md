@@ -80,25 +80,22 @@ plus the payload zips, for the product and each dependency. That is exactly what
 carries in its `products/` dir (point `--source` at either the products dir or its
 parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
 
-> #### On ISOs and read-only sources
+> #### Installing from an ISO
 >
-> Today `--source` should be an **extracted** directory. If you point it at a
-> read-only one (a mounted ISO, a read-only share), Mud Hut switches the driver XML
-> to a scratch dir and names the payload dirs by **absolute** path, so nothing is
-> written to the media. `MUDHUT_ESD_ABSOLUTE=1` forces that mode on a writable
-> package too.
+> Mount it and point `--source` at the mount — that is all:
 >
-> ✅ **Verified 2026-09-03** against a real HDPIM install: with the driver XML in
-> `/tmp`, outside the package, HDPIM resolved the payloads and extracted normally.
-> (The run was stopped once it was clearly installing — resolution is proven, a
-> full install to a launchable Photoshop was not run to completion.)
+> ```sh
+> udisksctl loop-setup -r -f ~/Downloads/photoshop.iso     # or mount it in your file manager
+> mudhut install photoshop --method offline --source /run/media/$USER/<label>/products --prefix ~/ps
+> ```
 >
-> **Why the writable/relative business exists at all:** nothing is ever written *to*
-> the payload media by the install. HDPIM resolves a *relative* `<EsdDirectory>`
-> (`./PHSP`) against the directory the driver XML itself sits in, so with relative
-> paths the XML has to be written next to the payloads — that write, and only that
-> write, is what read-only media blocks. It was our own path choice, not an HDPIM
-> requirement: `InstallDir` in the same XML has always been absolute.
+> The source does **not** need to be writable and nothing is copied. Mud Hut detects
+> read-only media and writes its driver XML to a scratch dir, naming the payload
+> dirs by absolute path. ✅ Verified against real HDPIM installs (2026-09-03), both
+> auto-detected and forced via `MUDHUT_ESD_ABSOLUTE=1`.
+>
+> Passing the `.iso` file itself is not supported — mount it first. (Auto-mounting
+> would only save you the one command, at the cost of a udisks/fuse dependency.)
 
 Requires the [Neutron](https://github.com/Nico-LaFoucate/neutron) runtime on `PATH`
 (`neutron runtime install`). The install engine finds Wine via the Neutron runtime

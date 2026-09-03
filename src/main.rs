@@ -118,8 +118,8 @@ struct InstallArgs {
 
     /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
     /// copied tree). For `offline`: the package dir (`<SAP>/` payload layout, as
-    /// staged by `mudhut download --dest`). Must be an extracted, WRITABLE dir:
-    /// the driver XML is written into it, so a mounted ISO will not work.
+    /// staged by `mudhut download --dest`). May be read-only — a mounted ISO
+    /// works; the driver XML then goes to a scratch dir with absolute paths.
     #[arg(long)]
     source: Option<PathBuf>,
 
@@ -141,7 +141,7 @@ enum Method {
     Download,
     /// Install from a pre-downloaded Adobe offline package — the ESD products
     /// layout `mudhut download --dest` stages (`<SAP>/Application.json` + payload
-    /// zips). Fully local; ISOs must be extracted first. Needs `--source <dir>`.
+    /// zips). Fully local. Needs `--source <dir>`; a mounted ISO is fine.
     Offline,
 }
 
