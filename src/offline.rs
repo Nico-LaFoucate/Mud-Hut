@@ -38,19 +38,26 @@ pub fn products_dir(source: &Path) -> Option<PathBuf> {
     // "Adobe CC 2026/products/PHSP"), and the user picked the ISO, not the
     // subdirectory. Bounded on depth and entries so a large tree cannot stall
     // the scan Collider runs on every source selection.
+    //
+    // The entry budget scales with the depth limit on purpose: a deeper search
+    // visits more directories, so too small a budget would be hit before the
+    // extra depth is ever reached and the limit would buy nothing. These are
+    // stat calls on directory entries only, so the walk stays fast.
+    const MAX_DEPTH: u32 = 4;
+    const MAX_ENTRIES: u32 = 2048;
     let mut queue = std::collections::VecDeque::from([(source.to_path_buf(), 0u32)]);
     let mut seen = 0u32;
     while let Some((dir, depth)) = queue.pop_front() {
         if holds_package(&dir) {
             return Some(dir);
         }
-        if depth >= 3 || seen > 512 {
+        if depth >= MAX_DEPTH || seen > MAX_ENTRIES {
             continue;
         }
         let Ok(rd) = fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             seen += 1;
-            if seen > 512 {
+            if seen > MAX_ENTRIES {
                 break;
             }
             if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
