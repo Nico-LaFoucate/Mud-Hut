@@ -30,9 +30,32 @@ use crate::output::Emitter;
 /// `products/` child (the Set-up.exe bundle layout). A dir qualifies when at
 /// least one catalog app's `<SAP>/Application.json` is staged in it.
 pub fn products_dir(source: &Path) -> Option<PathBuf> {
-    for cand in [source.to_path_buf(), source.join("products")] {
-        if catalog::apps().iter().any(|a| cand.join(a.sap).join("Application.json").is_file()) {
-            return Some(cand);
+    fn holds_package(d: &Path) -> bool {
+        catalog::apps().iter().any(|a| d.join(a.sap).join("Application.json").is_file())
+    }
+    // Breadth-first, shallowest match wins. Our own staging produces `<dir>` or
+    // `<dir>/products`, but an ISO authored by someone else can nest them (e.g.
+    // "Adobe CC 2026/products/PHSP"), and the user picked the ISO, not the
+    // subdirectory. Bounded on depth and entries so a large tree cannot stall
+    // the scan Collider runs on every source selection.
+    let mut queue = std::collections::VecDeque::from([(source.to_path_buf(), 0u32)]);
+    let mut seen = 0u32;
+    while let Some((dir, depth)) = queue.pop_front() {
+        if holds_package(&dir) {
+            return Some(dir);
+        }
+        if depth >= 3 || seen > 512 {
+            continue;
+        }
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 512 {
+                break;
+            }
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                queue.push_back((e.path(), depth + 1));
+            }
         }
     }
     None
@@ -53,23 +76,17 @@ pub fn install(
     let cat = catalog::find(app_id)
         .with_context(|| format!("unknown app '{app_id}' (see `mudhut apps`)"))?;
     let source =
-        source.context("--source is required for --method offline (the package dir)")?;
-    if source.is_file() {
-        bail!(
-            "--source points at a file ({0}), but --method offline needs a directory.\n\
-             \n\
-             If it is an ISO, MOUNT it and point --source at the mount — it does not\n\
-             need to be writable and nothing is copied:\n\
-             \n\
-             \x20   udisksctl loop-setup -r -f {0}\n\
-             \x20   # then --source <mountpoint>[/products]\n\
-             \n\
-             (Your file manager mounting it works just as well.) For a zip, extract it\n\
-             and point --source at the dir holding the <SAP>/ payload dirs.",
-            source.display()
-        );
+        source.context("--source is required for --method offline (a package dir or an .iso)")?;
+
+    // A .iso/.img is mounted read-only right here, so selecting an ISO just works.
+    // `_mount` is the teardown guard: it must stay alive for the whole install,
+    // because dropping it unmounts the image out from under HDPIM.
+    let (root, _mount) = crate::iso::resolve_source(source)?;
+    if _mount.is_some() {
+        em.note(&format!("mounted {} at {}", source.display(), root.display()));
     }
-    let products = products_dir(source).with_context(|| {
+
+    let products = products_dir(&root).with_context(|| {
         format!(
             "{} is not an offline package (no <SAP>/Application.json found — \
              stage one with `mudhut download <app> --dest <dir>`)",

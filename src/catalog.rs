@@ -70,7 +70,18 @@ enum Found {
 /// The source may be a Windows install root OR an offline package dir; the
 /// result carries `source_kind` so a UI can tell which one it found.
 pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
-    let src = match source {
+    // An .iso/.img source is mounted read-only here, so the scan Collider runs
+    // when you pick a source accepts an ISO exactly like a folder. `_mount` is
+    // the teardown guard and must outlive every use of the resolved path below.
+    let (resolved, _mount) = match source {
+        Some(s) => {
+            let (root, m) = crate::iso::resolve_source(s)?;
+            (Some(root), m)
+        }
+        None => (None, None),
+    };
+
+    let src = match resolved.as_deref() {
         Some(s) => Some(match source::Source::discover(s) {
             Ok(w) => Found::Windows(w),
             Err(_) => match crate::offline::products_dir(s) {
@@ -78,7 +89,7 @@ pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
                 None => anyhow::bail!(
                     "{} is neither a Windows install root (no Program Files/Adobe) \
                      nor an offline package (no <SAP>/Application.json)",
-                    s.display()
+                    source.unwrap_or(s).display()
                 ),
             },
         }),

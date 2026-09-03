@@ -21,6 +21,7 @@ mod feed;
 mod hdpim;
 mod install;
 mod ledger;
+mod iso;
 mod offline;
 mod output;
 mod source;
