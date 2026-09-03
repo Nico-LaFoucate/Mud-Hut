@@ -150,6 +150,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let em = Emitter::new(cli.json);
 
+    // Reclaim any ISO left mounted by a previous run that was killed before its
+    // teardown could run (see iso::sweep_stale — nothing runs on SIGKILL).
+    iso::sweep_stale();
+
     let result = match cli.cmd {
         Cmd::Doctor { prefix } => doctor::run(&em, prefix.as_deref()),
         Cmd::Apps { source } => catalog::cmd_apps(&em, source.as_deref()),

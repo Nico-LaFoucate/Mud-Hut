@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -285,8 +286,17 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     } else {
         em.note("winetricks not found — VC++ redists not installed (app may crash at launch)");
     }
-    // flush the registry cleanly
-    let _ = wineserver(cfg, prefix, "-w");
+    // Flush the registry cleanly — but BOUNDED.
+    //
+    // `wineserver -w` waits for EVERY process in the prefix to exit, and an app the
+    // user still has open (or an orphan that outlived its window — Photoshop leaves
+    // one, with AdobeIPCBroker beside it) holds it open forever. Measured on a real
+    // hang: mudhut in do_wait on `wineserver -w`, blocked on a Photoshop.exe that
+    // had been sleeping for 27 minutes after the user closed and force-quit it.
+    //
+    // The wait is a courtesy (the registry also flushes on its own), so a busy
+    // prefix must not stall the install. Time it out and carry on.
+    wineserver_wait_bounded(cfg, prefix, Duration::from_secs(20), em);
     Ok(())
 }
 
@@ -398,6 +408,41 @@ fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
         }
     }
     c
+}
+
+/// `wineserver -w`, abandoned after `limit`. Best-effort by design: see the call
+/// site for why an unbounded wait is a hang waiting to happen.
+fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Emitter) {
+    let ws = cfg.wine.with_file_name("wineserver");
+    let ws = if ws.is_file() { ws } else { cfg.wine.with_file_name("server").join("wineserver") };
+    let mut child = match Command::new(ws)
+        .arg("-w")
+        .env("WINEPREFIX", prefix)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Err(_) => return,
+            Ok(None) => {}
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            em.note(
+                "something is still running in this prefix, so the registry flush was skipped \
+                 (harmless). If an app is open in it, closing it first avoids this.",
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 fn wineserver(cfg: &Config, prefix: &Path, flag: &str) -> std::io::Result<std::process::ExitStatus> {

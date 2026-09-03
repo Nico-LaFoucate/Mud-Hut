@@ -27,7 +27,65 @@ impl Drop for Mounted {
         // Best-effort teardown: a failure here must not mask the real result.
         let _ = udisks(&["unmount", "-b", &self.loop_dev]);
         let _ = udisks(&["loop-delete", "-b", &self.loop_dev]);
+        let _ = std::fs::remove_file(record_path(&self.loop_dev));
     }
+}
+
+/// Where mounts are recorded so they can be reclaimed after an abnormal exit.
+fn records_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("mudhut-mounts")
+}
+
+fn record_path(loop_dev: &str) -> PathBuf {
+    records_dir().join(loop_dev.replace('/', "_"))
+}
+
+/// Reclaim mounts left behind by a mudhut that died without running `Drop`.
+///
+/// Drop covers a normal exit and an error return, but NOTHING runs on SIGKILL,
+/// and Rust does not run destructors on a default SIGTERM either — so a killed
+/// or crashed run leaves the image mounted and the loop device allocated. A
+/// signal handler cannot fix the SIGKILL case at all, which is why this is a
+/// recorded-state sweep instead: it reclaims after any death, including a power
+/// loss, and is async-signal-safe by construction because there is no handler.
+///
+/// Called at startup. Cheap: a directory read, and a liveness check per record.
+pub fn sweep_stale() {
+    let Ok(rd) = std::fs::read_dir(records_dir()) else { return };
+    for e in rd.flatten() {
+        let path = e.path();
+        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        let mut lines = body.lines();
+        let (Some(pid), Some(loop_dev)) = (lines.next(), lines.next()) else {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        };
+        // Still owned by a LIVE mudhut? Leave it alone. The comm check guards
+        // against pid reuse handing us an unrelated process.
+        let owner_alive = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .map(|c| c.trim() == "mudhut")
+            .unwrap_or(false);
+        if owner_alive {
+            continue;
+        }
+        let _ = udisks(&["unmount", "-b", loop_dev]);
+        let _ = udisks(&["loop-delete", "-b", loop_dev]);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+fn record(loop_dev: &str, mountpoint: &Path) {
+    let dir = records_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return; // recording is best-effort; never block a mount on it
+    }
+    let _ = std::fs::write(
+        record_path(loop_dev),
+        format!("{}\n{}\n{}\n", std::process::id(), loop_dev, mountpoint.display()),
+    );
 }
 
 /// Whether `p` looks like a disk image we can mount.
@@ -75,7 +133,10 @@ pub fn mount(image: &Path) -> Result<Mounted> {
             // Some desktops auto-mount the moment the loop device appears; that
             // is a success, not a failure. Ask where it landed before giving up.
             match findmnt(&loop_dev) {
-                Some(mp) => return Ok(Mounted { mountpoint: mp, loop_dev }),
+                Some(mp) => {
+                    record(&loop_dev, &mp);
+                    return Ok(Mounted { mountpoint: mp, loop_dev });
+                }
                 None => {
                     let _ = udisks(&["loop-delete", "-b", &loop_dev]);
                     return Err(e).with_context(|| format!("mounting {img}"));
@@ -89,6 +150,7 @@ pub fn mount(image: &Path) -> Result<Mounted> {
         .or_else(|| findmnt(&loop_dev))
         .with_context(|| format!("could not read the mountpoint from udisksctl: {mount_out:?}"))?;
 
+    record(&loop_dev, &mountpoint);
     Ok(Mounted { mountpoint, loop_dev })
 }
 
