@@ -35,7 +35,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use output::Emitter;
 
 #[derive(Parser)]
-#[command(name = "mudhut", version, about = "Install Adobe apps into a Neutron prefix")]
+#[command(
+    name = "mudhut",
+    // Includes the commit, so "is the fix in this binary?" is checkable
+    // rather than assumed. A -dirty suffix means it matches no commit.
+    version = concat!(env!("CARGO_PKG_VERSION"), " build ", env!("MUDHUT_BUILD")),
+    about = "Install Adobe apps into a Neutron prefix"
+)]
 struct Cli {
     /// Emit newline-delimited JSON events on stdout (for Collider / scripting).
     #[arg(long, global = true)]
