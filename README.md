@@ -88,9 +88,10 @@ parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
 > written to the media. `MUDHUT_ESD_ABSOLUTE=1` forces that mode on a writable
 > package too.
 >
-> ⚠️ **This absolute-path mode is not yet verified against a real HDPIM install** —
-> the XML shape is unit-tested, the install is not. Until it is, an extracted,
-> writable package is the proven route.
+> ✅ **Verified 2026-09-03** against a real HDPIM install: with the driver XML in
+> `/tmp`, outside the package, HDPIM resolved the payloads and extracted normally.
+> (The run was stopped once it was clearly installing — resolution is proven, a
+> full install to a launchable Photoshop was not run to completion.)
 >
 > **Why the writable/relative business exists at all:** nothing is ever written *to*
 > the payload media by the install. HDPIM resolves a *relative* `<EsdDirectory>`

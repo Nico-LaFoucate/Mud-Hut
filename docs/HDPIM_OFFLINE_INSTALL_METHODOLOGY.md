@@ -22,8 +22,15 @@ binary shipped. Verified: genuine PS 27.8 `Photoshop.exe` (269,727,216 B, PE32+ 
 `EsdDirectory ./PHSP` / `IsNonCCProduct false` / `IsNglEnabled true` / `SupportedLanguages en_US` +
 `<Dependencies>` (8: COCM CORG CORE COPS UXPW UAM SEPS COMP) `</ProductInfo>`
 `<RequestInfo><InstallDir>C:\Program Files\Adobe</InstallDir><InstallLanguage>en_US</InstallLanguage>`.
-Trimmed from the full 11-dep `Driver.xml` by dropping **COSY, ACR, CCXP** (see §5). `EsdDirectory` is
-relative to the Driver.xml dir. ⚠️ Rust `src/driver.rs` does NOT yet emit BaseVersion/IsNglEnabled/
+Trimmed from the full 11-dep `Driver.xml` by dropping **COSY, ACR, CCXP** (see §5). `EsdDirectory` **may be relative OR absolute**. A *relative* value resolves against the
+Driver.xml's own directory (NOT the process CWD) — which is why a relative XML must sit
+beside the `<SAP>/` payload dirs. ✅ **An ABSOLUTE `Z:\...\<SAP>` also works — verified
+2026-09-03**: HDPIM resolved the payloads and began extracting with the XML in `/tmp`,
+outside the package entirely. So the XML does NOT have to live in the package, and the
+payloads can sit on read-only media (a mounted ISO). ⛔ The earlier "the package dir must
+be writable" framing was wrong: nothing is written to the payload media by the install —
+the only write was our own relative-path XML. `InstallDir` in this same XML was always
+absolute, which should have been the clue. ⚠️ Rust `src/driver.rs` does NOT yet emit BaseVersion/IsNglEnabled/
 IsNonCCProduct/SupportedLanguages/absolute InstallDir — productionize it to this shape.
 
 ## 3. WAM prevention = don't run Set-up.exe
