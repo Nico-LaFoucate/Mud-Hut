@@ -47,7 +47,7 @@ mudhut ledger                                       # show the resolved Adobe en
 | --- | --- | --- |
 | `download` | **implemented** | Install genuine from Adobe's own servers. Resolves the product + its shared dependencies from the product feed, downloads + verifies them, then drives Adobe's own `HDPIM.dll` to decrypt and install (no Set-up.exe, no Creative Cloud desktop). |
 | `windows` | **implemented** | Copy from an existing Windows install (drive_c / mounted C: / copied tree). |
-| `offline` | planned | Extract from an Adobe offline package / ISO. |
+| `offline` | **implemented** | Install from a package you already have on disk, with no network at all. Same HDPIM decrypt engine as `download`; manifests are read from the package instead of Adobe's feed. |
 
 ### How `--method download` works
 
@@ -65,6 +65,37 @@ mudhut ledger                                       # show the resolved Adobe en
 The installed app is genuine and unmodified; **licensing is a separate one-time
 Adobe sign-in** (the app validates against your account via Adobe NGL). See
 `docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md` for the full method.
+
+### How `--method offline` works
+
+For installing with **no network access**, from a package already on disk:
+
+```sh
+mudhut install photoshop --method offline --source ~/mudhut-pkgs/PHSP-27.8-win64 --prefix ~/ps
+```
+
+`--source` is a directory in Adobe's ESD products layout — `<SAP>/Application.json`
+plus the payload zips, for the product and each dependency. That is exactly what
+`mudhut download <app> --dest <dir>` stages, and what a Set-up.exe offline bundle
+carries in its `products/` dir (point `--source` at either the products dir or its
+parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
+
+> #### ⚠️ The package directory must be WRITABLE — this is why an ISO won't work
+>
+> This trips everyone up, so it is worth stating plainly: **the blocker is not the
+> ISO format, it is read-only media.** Mounting an ISO instead of extracting it does
+> **not** help — it fails the same way.
+>
+> Adobe's `HDPIM.dll` resolves each `<EsdDirectory>` **relative to the directory the
+> driver XML itself lives in** — not the process working directory. So Mud Hut has to
+> write `Driver_core.xml` *into* the package directory, next to the `<SAP>/` payload
+> dirs. Putting it in a scratch dir and setting `CWD` to the package does not work:
+> HDPIM looks for `<scratch>/PHSP`, doesn't find it, and fails at startup with
+> **error 103, "Error occurred in starting install"**.
+>
+> So any read-only source — a mounted ISO, a read-only network share, a DVD — has to
+> be copied to writable storage first. "Extract the ISO" is really just the most
+> common way of saying *put the package somewhere writable*.
 
 Requires the [Neutron](https://github.com/Nico-LaFoucate/neutron) runtime on `PATH`
 (`neutron runtime install`). The install engine finds Wine via the Neutron runtime

@@ -118,7 +118,8 @@ struct InstallArgs {
 
     /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
     /// copied tree). For `offline`: the package dir (`<SAP>/` payload layout, as
-    /// staged by `mudhut download --dest`; extract an ISO first).
+    /// staged by `mudhut download --dest`). Must be an extracted, WRITABLE dir:
+    /// the driver XML is written into it, so a mounted ISO will not work.
     #[arg(long)]
     source: Option<PathBuf>,
 

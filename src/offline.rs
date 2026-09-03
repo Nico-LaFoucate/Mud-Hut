@@ -11,9 +11,15 @@
 //! uses ([`crate::download::hdpim_install_and_provision`]) — offline packages
 //! are encrypted, so they cannot be copy-staged like `windows`.
 //!
-//! ISOs / archives are not mounted here — extract one first and point
-//! `--source` at the dir that holds the `<SAP>/` payload dirs (or its parent
-//! with a `products/` child).
+//! `--source` must be an already-extracted, **WRITABLE** directory holding the
+//! `<SAP>/` payload dirs (or its parent with a `products/` child).
+//!
+//! The writability is the real constraint, not the container format: HDPIM
+//! resolves each `<EsdDirectory>` relative to the driver XML's OWN directory,
+//! so `Driver_core.xml` has to be written INTO the package next to the payload
+//! dirs (see the comment at the write site below). Mounting an ISO read-only
+//! therefore does NOT help — it fails the same way a scratch dir does. Any
+//! read-only source has to be copied to writable storage first.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,8 +60,15 @@ pub fn install(
         source.context("--source is required for --method offline (the package dir)")?;
     if source.is_file() {
         bail!(
-            "--source points at a file — ISO/archive packages aren't mounted yet; \
-             extract it and point --source at the products dir"
+            "--source points at a file ({}), but --method offline needs a directory.\n\
+             \n\
+             Extract it to writable storage and point --source at the dir holding the\n\
+             <SAP>/ payload dirs (e.g. PHSP/Application.json), or its parent.\n\
+             \n\
+             Note: mounting an ISO instead of extracting it will NOT work. The install\n\
+             writes Driver_core.xml into the package dir (HDPIM resolves <EsdDirectory>\n\
+             relative to that XML's own directory), so the package must be WRITABLE.",
+            source.display()
         );
     }
     let products = products_dir(source).with_context(|| {
@@ -65,6 +78,12 @@ pub fn install(
             source.display()
         )
     })?;
+
+    // Fail FAST on read-only media. The driver XML must be written into this dir
+    // (see the write site below), so a mounted ISO or read-only share can never
+    // work. Without this check the failure lands AFTER the full resolve+verify and
+    // reads like "your package is broken" rather than "your media is read-only".
+    ensure_writable(&products)?;
 
     // Local manifest resolve (the package is the source of truth — no feed).
     let (manifest, build) = read_manifest(&products, cat.sap, app_id).with_context(|| {
@@ -194,4 +213,25 @@ fn missing_packages(plan: &DownloadPlan, products: &Path) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// Probe that `dir` is writable, so read-only media fails early with an
+/// explanation instead of deep inside the install.
+fn ensure_writable(dir: &Path) -> Result<()> {
+    let probe = dir.join(".mudhut-write-probe");
+    match fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) => bail!(
+            "the package dir is not writable: {} ({e})\n\
+             \n\
+             --method offline writes Driver_core.xml into the package, because HDPIM\n\
+             resolves <EsdDirectory> relative to that XML's own directory. A mounted\n\
+             ISO or read-only share therefore cannot be installed from directly — copy\n\
+             the package to writable storage and point --source there.",
+            dir.display()
+        ),
+    }
 }
