@@ -10,7 +10,7 @@
 //! `docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
@@ -424,21 +424,50 @@ trait CommandExt {
 }
 impl CommandExt for Command {
     fn status_ok(&mut self, what: &str) -> Result<()> {
-        // Capture rather than inherit: these commands are short, and their output
-        // is noise UNTIL one fails, at which point it is the only thing that
-        // explains why. Inheriting sent it to the parent's stderr, which under
-        // Collider is discarded — leaving the user with a bare
-        // "wineboot --init failed (exit status: 1)" and nothing to act on.
-        let out = self.output().with_context(|| format!("spawning {what}"))?;
-        if !out.status.success() {
-            // Wine's real complaint is at the END of stderr, after the driver noise.
-            let err = String::from_utf8_lossy(&out.stderr);
-            let tail: Vec<&str> = err
+        // Capture to a FILE, never a pipe.
+        //
+        // ⛔ `Command::output()` waits for EOF on the child's stdout/stderr, NOT
+        // for the child to exit. wineserver is a daemon that outlives the command
+        // that started it and inherits its handles, so those pipes never reach EOF
+        // and output() blocks forever with the child already reaped as a zombie.
+        // Measured: mudhut asleep in poll() on two pipes whose write ends were held
+        // by a wineserver alive for 14 minutes. It only bites on the SECOND install
+        // into a prefix, where a wineserver from the first one is still up, which is
+        // exactly the case a single end-to-end install never reaches.
+        //
+        // A file has no EOF dependency, `status()` waits only for the child, and as
+        // a bonus wine's chatter no longer flows into whatever pipe our own stdout
+        // is attached to (Collider reads it as NDJSON).
+        let mut log_path = std::env::temp_dir();
+        log_path.push(format!(
+            "mudhut-{}-{}.log",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let log = std::fs::File::create(&log_path)
+            .with_context(|| format!("creating a log file for {what}"))?;
+        let log2 = log.try_clone().with_context(|| format!("duplicating the log fd for {what}"))?;
+
+        let st = self
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log2))
+            .status()
+            .with_context(|| format!("spawning {what}"))?;
+
+        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&log_path);
+
+        if !st.success() {
+            // Wine's real complaint is at the END, after the driver noise.
+            let tail: Vec<&str> = text
                 .lines()
                 .map(str::trim)
                 .filter(|l| {
                     !l.is_empty()
-                        // MESA/EGL chatter is emitted on healthy runs too.
+                        // emitted on healthy runs too
                         && !l.contains("MESA-EGL")
                         && !l.starts_with("pci id for fd")
                 })
@@ -447,9 +476,9 @@ impl CommandExt for Command {
                 .collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
             if tail.is_empty() {
-                bail!("{what} failed ({}) — no error output", out.status);
+                bail!("{what} failed ({}) — no error output", st);
             }
-            bail!("{what} failed ({}):\n{}", out.status, tail.join("\n"));
+            bail!("{what} failed ({}):\n{}", st, tail.join("\n"));
         }
         Ok(())
     }
