@@ -12,7 +12,36 @@ use anyhow::{Context, Result};
 use crate::feed::DownloadPlan;
 
 /// Write `<dest>/driver.xml` describing `plan`'s install. Returns the path.
+/// Write the DriverInfo with a RELATIVE `EsdDirectory` (`./<SAP>`), into `dest`
+/// alongside the payload dirs. The long-proven layout used by `--method download`.
 pub fn write_driver_xml(plan: &DownloadPlan, dest: &Path) -> Result<PathBuf> {
+    write_driver_xml_in(plan, dest, None)
+}
+
+/// Write the DriverInfo to `xml_dir`.
+///
+/// `esd_root` selects how each `<EsdDirectory>` is expressed:
+/// * `None` — relative `./<SAP>`. HDPIM resolves it against the directory the XML
+///   itself lives in, so `xml_dir` must also BE the products dir.
+/// * `Some(products)` — absolute `Z:\...\<SAP>`, which frees the XML to live
+///   anywhere writable and lets the payloads sit on read-only media (a mounted
+///   ISO, a read-only share).
+pub fn write_driver_xml_in(
+    plan: &DownloadPlan,
+    xml_dir: &Path,
+    esd_root: Option<&Path>,
+) -> Result<PathBuf> {
+    // `Z:` maps the Linux root inside the prefix; escape XML-significant chars in
+    // case a path carries them.
+    let esd = |sap: &str| -> String {
+        match esd_root {
+            None => format!("./{sap}"),
+            Some(root) => crate::hdpim::to_z_path(&root.join(sap))
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;"),
+        }
+    };
     let name = if plan.name.to_lowercase().starts_with("adobe") {
         plan.name.clone()
     } else {
@@ -25,9 +54,9 @@ pub fn write_driver_xml(plan: &DownloadPlan, dest: &Path) -> Result<PathBuf> {
             "      <Dependency>\n\
              \x20       <SAPCode>{}</SAPCode>\n\
              \x20       <BaseVersion>{}</BaseVersion>\n\
-             \x20       <EsdDirectory>./{}</EsdDirectory>\n\
+             \x20       <EsdDirectory>{}</EsdDirectory>\n\
              \x20     </Dependency>\n",
-            d.sap, d.base_version, d.sap
+            d.sap, d.base_version, esd(&d.sap)
         ));
     }
 
@@ -39,7 +68,7 @@ pub fn write_driver_xml(plan: &DownloadPlan, dest: &Path) -> Result<PathBuf> {
          \x20   <CodexVersion>{ver}</CodexVersion>\n\
          \x20   <BaseVersion>{base}</BaseVersion>\n\
          \x20   <Platform>{plat}</Platform>\n\
-         \x20   <EsdDirectory>./{sap}</EsdDirectory>\n\
+         \x20   <EsdDirectory>{esd_product}</EsdDirectory>\n\
          \x20   <IsNonCCProduct>false</IsNonCCProduct>\n\
          \x20   <IsNglEnabled>true</IsNglEnabled>\n\
          \x20   <SupportedLanguages>\n\
@@ -61,9 +90,10 @@ pub fn write_driver_xml(plan: &DownloadPlan, dest: &Path) -> Result<PathBuf> {
         plat = plan.platform,
         deps = deps,
         lang = plan.language,
+        esd_product = esd(&plan.sap),
     );
 
-    let path = dest.join("driver.xml");
+    let path = xml_dir.join("driver.xml");
     fs::write(&path, xml).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
@@ -116,5 +146,25 @@ mod tests {
             assert!(xml.contains(needle), "driver.xml missing {needle:?}\n---\n{xml}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absolute_esd_directory_points_outside_the_xml_dir() {
+        // The read-only-media path: the XML lives in a scratch dir and names the
+        // payload dirs by absolute Z: path, so nothing is written to the package.
+        let plan = phsp_plan();
+        let xml_dir = std::env::temp_dir().join(format!("mudhut-abs-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&xml_dir);
+        let products = Path::new("/mnt/iso/products");
+        let p = write_driver_xml_in(&plan, &xml_dir, Some(products)).unwrap();
+        let x = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            x.contains(r"<EsdDirectory>Z:\mnt\iso\products\PHSP</EsdDirectory>"),
+            "product EsdDirectory not absolute:\n{x}"
+        );
+        assert!(!x.contains("<EsdDirectory>./"), "a relative EsdDirectory survived:\n{x}");
+        // InstallDir is unrelated to the payload location and must stay put.
+        assert!(x.contains(r"<InstallDir>C:\Program Files\Adobe</InstallDir>"));
+        let _ = std::fs::remove_dir_all(&xml_dir);
     }
 }

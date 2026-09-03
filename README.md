@@ -80,22 +80,24 @@ plus the payload zips, for the product and each dependency. That is exactly what
 carries in its `products/` dir (point `--source` at either the products dir or its
 parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
 
-> #### ⚠️ The package directory must be WRITABLE — this is why an ISO won't work
+> #### On ISOs and read-only sources
 >
-> This trips everyone up, so it is worth stating plainly: **the blocker is not the
-> ISO format, it is read-only media.** Mounting an ISO instead of extracting it does
-> **not** help — it fails the same way.
+> Today `--source` should be an **extracted** directory. If you point it at a
+> read-only one (a mounted ISO, a read-only share), Mud Hut switches the driver XML
+> to a scratch dir and names the payload dirs by **absolute** path, so nothing is
+> written to the media. `MUDHUT_ESD_ABSOLUTE=1` forces that mode on a writable
+> package too.
 >
-> Adobe's `HDPIM.dll` resolves each `<EsdDirectory>` **relative to the directory the
-> driver XML itself lives in** — not the process working directory. So Mud Hut has to
-> write `Driver_core.xml` *into* the package directory, next to the `<SAP>/` payload
-> dirs. Putting it in a scratch dir and setting `CWD` to the package does not work:
-> HDPIM looks for `<scratch>/PHSP`, doesn't find it, and fails at startup with
-> **error 103, "Error occurred in starting install"**.
+> ⚠️ **This absolute-path mode is not yet verified against a real HDPIM install** —
+> the XML shape is unit-tested, the install is not. Until it is, an extracted,
+> writable package is the proven route.
 >
-> So any read-only source — a mounted ISO, a read-only network share, a DVD — has to
-> be copied to writable storage first. "Extract the ISO" is really just the most
-> common way of saying *put the package somewhere writable*.
+> **Why the writable/relative business exists at all:** nothing is ever written *to*
+> the payload media by the install. HDPIM resolves a *relative* `<EsdDirectory>`
+> (`./PHSP`) against the directory the driver XML itself sits in, so with relative
+> paths the XML has to be written next to the payloads — that write, and only that
+> write, is what read-only media blocks. It was our own path choice, not an HDPIM
+> requirement: `InstallDir` in the same XML has always been absolute.
 
 Requires the [Neutron](https://github.com/Nico-LaFoucate/neutron) runtime on `PATH`
 (`neutron runtime install`). The install engine finds Wine via the Neutron runtime

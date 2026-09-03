@@ -414,7 +414,7 @@ fn which(bin: &str) -> Option<PathBuf> {
 }
 
 /// Map an absolute Linux path to a Wine `Z:` Windows path.
-fn to_z_path(p: &Path) -> String {
+pub(crate) fn to_z_path(p: &Path) -> String {
     format!("Z:{}", p.to_string_lossy().replace('/', "\\"))
 }
 

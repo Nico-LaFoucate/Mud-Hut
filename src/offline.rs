@@ -79,12 +79,6 @@ pub fn install(
         )
     })?;
 
-    // Fail FAST on read-only media. The driver XML must be written into this dir
-    // (see the write site below), so a mounted ISO or read-only share can never
-    // work. Without this check the failure lands AFTER the full resolve+verify and
-    // reads like "your package is broken" rather than "your media is read-only".
-    ensure_writable(&products)?;
-
     // Local manifest resolve (the package is the source of truth — no feed).
     let (manifest, build) = read_manifest(&products, cat.sap, app_id).with_context(|| {
         format!("{} is not staged in this package ({})", cat.name, products.display())
@@ -152,25 +146,55 @@ pub fn install(
         return Ok(());
     }
 
-    // Write the DriverInfo INTO the products dir, alongside the <SAP>/ payload
-    // dirs — exactly like the download route. HDPIM resolves each <EsdDirectory>
-    // relative to the driver.xml's OWN directory, NOT the process CWD: a driver.xml
-    // written to a scratch dir (even with CWD=products) makes HDPIM fail at start
-    // with error 103 "Error occurred in starting install" — it looks for
-    // <scratch>/PHSP, which doesn't exist. So it must be co-located with the ESD
-    // dirs. (If the package sits on read-only media, copy it to a writable dir
-    // first — the write below surfaces the error.)
-    let driver_xml = crate::driver::write_driver_xml(&plan, &products).with_context(|| {
-        format!(
-            "writing driver.xml into {} — the package dir must be writable \
-             (copy it off read-only media first)",
-            products.display()
-        )
-    })?;
+    // WHERE THE DRIVER XML GOES, and why it is a choice rather than a constraint.
+    //
+    // HDPIM resolves a RELATIVE <EsdDirectory> (`./PHSP`) against the directory the
+    // driver XML itself lives in -- NOT the process CWD. So with relative paths the
+    // XML must be co-located with the <SAP>/ payload dirs; a scratch dir (even with
+    // CWD=products) makes HDPIM fail at start with error 103, looking for
+    // <scratch>/PHSP. That is the proven, long-standing download layout.
+    //
+    // It also means relative paths force a WRITE into the package -- which is the
+    // only reason read-only media (a mounted ISO, a read-only share) was ever a
+    // problem. Nothing is written to the media itself by the install; it was our own
+    // path choice. An ABSOLUTE <EsdDirectory> lifts that: the XML can live in a
+    // scratch dir and point at the payloads wherever they are. `InstallDir` in the
+    // same XML has always been absolute, so the schema is not relative-only.
+    //
+    // Default stays relative (the proven path). Absolute is used when the package is
+    // read-only, or when forced with MUDHUT_ESD_ABSOLUTE=1 to A/B the two on the same
+    // package.
+    let force_abs =
+        std::env::var_os("MUDHUT_ESD_ABSOLUTE").is_some_and(|v| v != "0" && !v.is_empty());
+    let writable = is_writable(&products);
+    let mut scratch: Option<PathBuf> = None;
 
-    crate::download::hdpim_install_and_provision(
+    let driver_xml = if force_abs || !writable {
+        let dir = std::env::temp_dir().join(format!("mudhut-driver-{}", std::process::id()));
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating scratch dir {}", dir.display()))?;
+        em.note(&format!(
+            "driver XML -> {} with ABSOLUTE EsdDirectory ({})",
+            dir.display(),
+            if writable { "forced by MUDHUT_ESD_ABSOLUTE" } else { "package dir is read-only" }
+        ));
+        let x = crate::driver::write_driver_xml_in(&plan, &dir, Some(products.as_path()))
+            .with_context(|| format!("writing driver.xml into {}", dir.display()))?;
+        scratch = Some(dir);
+        x
+    } else {
+        crate::driver::write_driver_xml(&plan, &products).with_context(|| {
+            format!("writing driver.xml into {}", products.display())
+        })?
+    };
+
+    let r = crate::download::hdpim_install_and_provision(
         em, &cat, &driver_xml, &products, prefix, "offline", dry_run,
-    )
+    );
+    if let Some(dir) = scratch {
+        let _ = fs::remove_dir_all(dir);
+    }
+    r
 }
 
 /// Read a component's staged `Application.json`, returning the typed manifest
@@ -215,23 +239,15 @@ fn missing_packages(plan: &DownloadPlan, products: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Probe that `dir` is writable, so read-only media fails early with an
-/// explanation instead of deep inside the install.
-fn ensure_writable(dir: &Path) -> Result<()> {
+/// Whether `dir` can be written to. Not fatal: a read-only package is installed
+/// via an absolute `EsdDirectory` instead (see the write site above).
+fn is_writable(dir: &Path) -> bool {
     let probe = dir.join(".mudhut-write-probe");
     match fs::write(&probe, b"") {
         Ok(()) => {
             let _ = fs::remove_file(&probe);
-            Ok(())
+            true
         }
-        Err(e) => bail!(
-            "the package dir is not writable: {} ({e})\n\
-             \n\
-             --method offline writes Driver_core.xml into the package, because HDPIM\n\
-             resolves <EsdDirectory> relative to that XML's own directory. A mounted\n\
-             ISO or read-only share therefore cannot be installed from directly — copy\n\
-             the package to writable storage and point --source there.",
-            dir.display()
-        ),
+        Err(_) => false,
     }
 }
