@@ -93,26 +93,49 @@ pub fn install(
         bail!("the staged {} manifest lists no en_US packages", cat.name);
     }
 
-    // The DriverInfo dependency list must match what's staged: keep only the
-    // dependency components actually present in the package.
-    plan.dependencies
-        .retain(|d| products.join(&d.sap).join("Application.json").is_file());
-
-    // Verify every planned payload file exists (product + each staged dep) so an
-    // incomplete package fails HERE with a clear message, not deep inside HDPIM.
-    let mut missing = missing_packages(&plan, &products);
-    for dep in &plan.dependencies {
+    // The DriverInfo dependency list must match what is ACTUALLY staged. A
+    // dependency counts as staged only when its manifest AND every one of its
+    // planned payloads is present.
+    //
+    // ⛔ `Application.json` alone is NOT sufficient evidence. A staged package
+    // carries manifests for components whose payloads were deliberately never
+    // fetched, and keying off the manifest re-admits exactly those: CCXP needs a
+    // macOS-only `CCXProcess-LaunchAgent.zip` ("not present in ESD Mode", error
+    // 182) and can NEVER be completed on Windows; ACR ships delta zips that were
+    // not downloaded. The proven Driver_core.xml omits both. Keying off the
+    // manifest made the install die on a completeness check for files that are
+    // not supposed to exist.
+    let mut skipped: Vec<String> = Vec::new();
+    let mut kept = Vec::with_capacity(plan.dependencies.len());
+    for dep in std::mem::take(&mut plan.dependencies) {
+        if !products.join(&dep.sap).join("Application.json").is_file() {
+            continue; // not in this package at all
+        }
         let (dm, db) = read_manifest(&products, &dep.sap, &dep.sap.to_lowercase())
             .with_context(|| format!("reading staged dependency {}", dep.sap))?;
-        missing.extend(missing_packages(&crate::feed::plan(&db, &dm, "en_US"), &products));
+        let missing = missing_packages(&crate::feed::plan(&db, &dm, "en_US"), &products);
+        if missing.is_empty() {
+            kept.push(dep);
+        } else {
+            skipped.push(format!("{} ({} payload(s) not staged)", dep.sap, missing.len()));
+        }
     }
+    plan.dependencies = kept;
+
+    // The PRODUCT's own payloads are not optional — an incomplete product is a
+    // broken package and must fail here, not deep inside HDPIM.
+    let missing = missing_packages(&plan, &products);
     if !missing.is_empty() {
         let shown: Vec<&str> = missing.iter().take(5).map(|s| s.as_str()).collect();
         bail!(
-            "offline package incomplete — {} payload file(s) missing (e.g. {})",
+            "offline package incomplete — {} {} payload file(s) missing (e.g. {})",
             missing.len(),
+            cat.name,
             shown.join(", ")
         );
+    }
+    if !skipped.is_empty() {
+        em.note(&format!("skipping partially staged dependency: {}", skipped.join(", ")));
     }
     em.progress("resolve", 100, &format!("package verified · {} dep(s) staged", plan.dependencies.len()));
 
