@@ -249,19 +249,6 @@ fn find_installed_exe(prefix: &Path, app_name: &str) -> Option<PathBuf> {
 
 /// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + VC++ redists.
 fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
-    // Wine does not create the prefix path — it chdir()s into it, and a missing
-    // directory makes `wineboot --init` exit 1 with nothing but
-    // "wine: chdir to <path> : No such file or directory". Create it here so the
-    // common case just works, and so anything left (a permission problem, a file
-    // in the way) reports as itself rather than as an opaque wineboot failure.
-    if !prefix.exists() {
-        std::fs::create_dir_all(prefix).with_context(|| {
-            format!("creating the prefix directory {}", prefix.display())
-        })?;
-    } else if !prefix.is_dir() {
-        bail!("--prefix is not a directory: {}", prefix.display());
-    }
-
     // Init: suppress the interactive Mono/Gecko installer dialog (it blocks headless).
     wine(cfg, prefix, &["wineboot", "--init"])
         .env("WINEDLLOVERRIDES", "mscoree,mshtml=d")

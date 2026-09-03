@@ -153,7 +153,7 @@ fn main() -> ExitCode {
     let result = match cli.cmd {
         Cmd::Doctor { prefix } => doctor::run(&em, prefix.as_deref()),
         Cmd::Apps { source } => catalog::cmd_apps(&em, source.as_deref()),
-        Cmd::Install(a) => match a.method {
+        Cmd::Install(a) => ensure_prefix_dir(&a.prefix, a.dry_run).and_then(|()| match a.method {
             // download has its own decrypt-install engine (HDPIM), not copy-staging.
             Method::Download => {
                 download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
@@ -166,7 +166,7 @@ fn main() -> ExitCode {
             Method::Offline => {
                 offline::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
             }
-        },
+        }),
         Cmd::Ledger => ledger::cmd_ledger(&em),
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
@@ -188,4 +188,32 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Make sure the install target exists before ANY method runs.
+///
+/// Mud Hut's whole job is "produce a working prefix at this path", so the path
+/// not existing yet is the NORMAL case, not an error. Wine will create a single
+/// missing directory but not its parents, so a nested target (Collider's default
+/// is `~/Neutron/Adobe`, and `~/Neutron` does not exist on a clean machine) made
+/// `wineboot --init` die with a bare exit 1.
+///
+/// This lives here, at the dispatch, rather than inside a method: `--method
+/// windows` created the prefix on its way to staging while the HDPIM path
+/// (download AND offline) never did, and that asymmetry is exactly why the gap
+/// survived an end-to-end verification — the runs that exercised it happened to
+/// use paths that already existed.
+fn ensure_prefix_dir(prefix: &std::path::Path, dry_run: bool) -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+    if prefix.exists() {
+        if !prefix.is_dir() {
+            bail!("--prefix is not a directory: {}", prefix.display());
+        }
+        return Ok(());
+    }
+    if dry_run {
+        return Ok(()); // a dry run must not touch the filesystem
+    }
+    std::fs::create_dir_all(prefix)
+        .with_context(|| format!("creating the prefix directory {}", prefix.display()))
 }
