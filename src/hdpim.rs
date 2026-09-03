@@ -384,18 +384,33 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     let _ = wine(cfg, prefix, &["reg", "delete", r"HKCU\Software\Wine", "/v", "Version", "/f"])
         .status(); // ok if absent
 
-    // VC++ runtimes (Adobe's native C++ needs the real redists; wine builtins crash).
+    // VC++ runtimes (Adobe's native C++ needs the real redists; wine builtins crash)
+    // and the real Microsoft core fonts.
+    //
+    // corefonts is NOT cosmetic: CoolType picks the Roman default by PostScript
+    // name and throws on Wine's substitutes, so Premiere, After Effects and Media
+    // Encoder fail at STARTUP without genuine georgia/verdana/impact/trebuc/
+    // times/arial. `neutron prefix provision` only DETECTS this and prints
+    // "run `winetricks corefonts`" — nothing installed them, so an install that
+    // reported success produced a prefix whose video apps could not launch.
+    // Installing them here, where winetricks already runs and the user expects
+    // the slow part, is what makes "a working, launchable prefix" true.
     if which("winetricks").is_some() {
-        em.progress("prereqs", 15, "winetricks vcrun2022 + vcrun2013");
+        em.progress("prereqs", 15, "winetricks vcrun2022 + vcrun2013 + corefonts");
         let mut c = Command::new("winetricks");
-        c.args(["-q", "-f", "vcrun2022", "vcrun2013"])
+        c.args(["-q", "-f", "vcrun2022", "vcrun2013", "corefonts"])
             .env("WINE", &cfg.wine)
             .env("WINEPREFIX", prefix)
             .env("WINEDEBUG", "-all")
             .env("W_OPT_UNATTENDED", "1");
         let _ = c.status(); // best-effort; a missing redist surfaces at launch
     } else {
-        em.note("winetricks not found — VC++ redists not installed (app may crash at launch)");
+        em.note(
+            "winetricks not found — VC++ redists AND core fonts not installed. \
+             Premiere/After Effects/Media Encoder will fail at startup without the \
+             real Microsoft fonts; install winetricks and re-run, or run \
+             `winetricks -q -f corefonts` against this prefix.",
+        );
     }
     // Flush the registry cleanly — but BOUNDED.
     //
