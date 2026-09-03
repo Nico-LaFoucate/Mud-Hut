@@ -22,4 +22,8 @@ fn main() {
     // Re-run when HEAD moves so the stamp cannot go stale.
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
+    // Also re-stamp when SOURCES change, or an edited-but-uncommitted tree keeps
+    // the previous build's stamp and the "-dirty" marker silently goes stale --
+    // which defeats the whole point of being able to tell builds apart.
+    println!("cargo:rerun-if-changed=src");
 }

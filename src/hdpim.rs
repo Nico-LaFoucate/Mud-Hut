@@ -211,6 +211,13 @@ pub fn install(
         return Ok(prefix.join("drive_c/Program Files/Adobe").join(format!("Adobe {} <year>", cat.name)));
     }
 
+    // ⛔ FIRST, before touching the prefix at all. This check used to live in
+    // run_hdpim, which is after prefix setup -- so a second install into a busy
+    // prefix got as far as winetricks, whose internal `wineserver -w` then blocked
+    // on the first install's processes and looked like "hanging on vcrun2022".
+    // Refusing here names the other install instead of deadlocking behind it.
+    clear_orphan_hosts(em, prefix)?;
+
     em.progress("prereqs", 5, "prefix init + Win11 spoof + VC++ runtime");
     setup_prefix(em, cfg, prefix)?;
 
@@ -272,6 +279,44 @@ fn hosts_in_prefix(prefix: &Path) -> Vec<(i32, i32)> {
 /// run: it is killed here so it cannot corrupt this install or be mistaken by
 /// the user for the one they should not touch.
 fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
+    // Another mudhut install already working on this prefix? Refuse before we
+    // touch anything. An hdpim_host only exists during the decrypt, so keying on
+    // that alone misses a rival that is still in prereqs -- which is exactly when
+    // the collision bites, because winetricks' internal `wineserver -w` then
+    // blocks on the other install's wine processes and reports itself as a hung
+    // "vcrun2022" step.
+    //
+    // ⛔ Skip our OWN pid: a cmdline match for the prefix necessarily matches this
+    // very process.
+    let me = std::process::id() as i32;
+    let want = format!("--prefix{}{}", '\0', prefix.display());
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for e in rd.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+                continue;
+            };
+            if pid == me {
+                continue;
+            }
+            let is_mudhut = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                .map(|c| c.trim() == "mudhut")
+                .unwrap_or(false);
+            if !is_mudhut {
+                continue;
+            }
+            let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else { continue };
+            let cmd = String::from_utf8_lossy(&raw);
+            if cmd.contains("install") && cmd.contains(&want) {
+                bail!(
+                    "another Mud Hut install (pid {pid}) is already working on this prefix.\n\
+                     Two installs into one prefix deadlock each other — winetricks waits for \
+                     every process in the prefix to exit, and the other install's will not.\n\
+                     Wait for it to finish, or stop it with: kill {pid}"
+                );
+            }
+        }
+    }
+
     for (pid, ppid) in hosts_in_prefix(prefix) {
         let owner_alive = std::fs::read_to_string(format!("/proc/{ppid}/comm"))
             .map(|c| c.trim() == "mudhut")
@@ -440,7 +485,20 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
             .env("WINEPREFIX", prefix)
             .env("WINEDEBUG", "-all")
             .env("W_OPT_UNATTENDED", "1");
-        let _ = c.status(); // best-effort; a missing redist surfaces at launch
+        // ⛔ BOUNDED. winetricks runs `wineserver -w` internally, which waits for
+        // EVERY process in the prefix to exit -- so anything else live in it hangs
+        // winetricks forever, and the install reports "vcrun2022" while actually
+        // being blocked on someone else's wine process. Measured: winetricks in
+        // do_wait on a wineserver in fcntl_setlk, held by a second install's
+        // hdpim_host. It is best-effort by design, so time it out and continue.
+        match run_bounded(&mut c, Duration::from_secs(900)) {
+            Ok(true) => {}
+            Ok(false) => em.note(
+                "winetricks did not finish in time and was stopped — VC++ redists or core \
+                 fonts may be missing. Check nothing else is running in this prefix.",
+            ),
+            Err(e) => em.note(&format!("winetricks could not run: {e}")),
+        }
     } else {
         em.note(
             "winetricks not found — VC++ redists AND core fonts not installed. \
@@ -614,6 +672,25 @@ fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
 
 /// `wineserver -w`, abandoned after `limit`. Best-effort by design: see the call
 /// site for why an unbounded wait is a hang waiting to happen.
+/// Run `cmd` to completion or kill it after `limit`. Ok(true) = it exited on its
+/// own, Ok(false) = it was stopped. For steps that are best-effort and must never
+/// be able to hang the install.
+fn run_bounded(cmd: &mut Command, limit: Duration) -> std::io::Result<bool> {
+    let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    let deadline = Instant::now() + limit;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Emitter) {
     let ws = cfg.wine.with_file_name("wineserver");
     let ws = if ws.is_file() { ws } else { cfg.wine.with_file_name("server").join("wineserver") };
