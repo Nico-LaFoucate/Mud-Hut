@@ -445,7 +445,7 @@ fn find_named(root: &Path, name: &std::ffi::OsStr, max_depth: u32) -> Option<Pat
 fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     // Init: suppress the interactive Mono/Gecko installer dialog (it blocks headless).
     wine(cfg, prefix, &["wineboot", "--init"])
-        .env("WINEDLLOVERRIDES", "mscoree,mshtml=d")
+        .env("WINEDLLOVERRIDES", "mscoree,mshtml=d;winemenubuilder.exe=d")
         .status_ok("wineboot --init")?;
 
     // Win11 24H2 spoof (HDPIM gates on the OS version; see methodology §4).
@@ -565,7 +565,7 @@ fn run_hdpim(
         .arg(&driver_win)
         .arg("2400") // pump-second ceiling
         .current_dir(packages_dir)
-        .env("WINEDLLOVERRIDES", "mshtml=d");
+        .env("WINEDLLOVERRIDES", "mshtml=d;winemenubuilder.exe=d");
     // Tie the host's life to ours: if Mud Hut is killed, the decrypt must not keep
     // running against a prefix nobody is supervising. Covers SIGKILL of the parent,
     // which no cleanup code of ours could handle.
@@ -659,6 +659,15 @@ fn verify(exe: &Path) -> Result<()> {
 fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(&cfg.wine);
     c.env("WINEPREFIX", prefix)
+        // ⛔ Kill winemenubuilder. Left enabled it mirrors the prefix's Start Menu
+        // into ~/.local/share/applications/wine/Programs/, and those launchers run
+        // BARE `wine` from PATH -- distro wine, not the pinned Neutron runtime. That
+        // is the exact bug LAUNCHERS.md exists for: a menu launch then fires
+        // `wineboot -u` and reverts the prefix's patched natives. They also carry
+        // the same StartupWMClass as ours, so KDE cannot tell them apart and one can
+        // silently take over a dock pin -- which is how a user's pinned Premiere 2025
+        // became 2026 after installing the 2026 suite.
+        .env("WINEDLLOVERRIDES", "winemenubuilder.exe=d")
         .env("WINEDEBUG", "err-all,fixme-all")
         .env("WAYLAND_DISPLAY", std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into()));
     // args may be a placeholder for the hdpim path (see cmd_hdpim); skip empties.
