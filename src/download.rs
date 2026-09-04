@@ -258,12 +258,50 @@ pub(crate) fn repo_tools_dir() -> Result<PathBuf> {
 
 /// Staged public ACCCx runtime packages: `$MUDHUT_ACCC_PACKAGES`, else the
 /// conventional stage under `$HOME`.
+/// The staged public ACCCx runtime packages that `seed_runtime` extracts to put
+/// HDBox/HDPIM into a prefix. Without them NO install can run.
+///
+/// ⛔ This used to return `$HOME/mudhut-parent-stage/packages` unconditionally —
+/// a DEV-BOX scratch path. It exists here and nowhere else, so every install on
+/// every other machine died at discover() with
+/// "ACCCx runtime packages dir not found: /home/<them>/mudhut-parent-stage/packages",
+/// naming a directory they were never given and could not create. Reported by a
+/// build tester 2026-09-04. Same failure family as the hardcoded default prefix:
+/// a path that happens to exist on the machine it was written on.
+///
+/// Resolution order mirrors `repo_tools_dir()`: explicit override, then the
+/// SHIPPED copy beside the binary, then the dev tree, and only then the old
+/// scratch path so a dev box keeps working.
 fn accc_packages_dir() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
         return Ok(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    Ok(PathBuf::from(home).join("mudhut-parent-stage/packages"))
+    let mut tried: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for cand in [dir.join("accc-packages"), dir.join("../../accc-packages")] {
+                if cand.is_dir() {
+                    return Ok(cand.canonicalize().unwrap_or(cand));
+                }
+                tried.push(cand);
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let dev = PathBuf::from(home).join("mudhut-parent-stage/packages");
+        if dev.is_dir() {
+            return Ok(dev);
+        }
+        tried.push(dev);
+    }
+    bail!(
+        "the ACCCx runtime packages are missing — Mud Hut cannot seed a prefix without them.\n\
+         Looked in:\n{}\n\
+         They ship beside the mudhut binary as `accc-packages/`. If you installed from a \
+         Neutron stack bundle and this is missing, the bundle is incomplete — please report it. \
+         To point at a copy elsewhere, set MUDHUT_ACCC_PACKAGES.",
+        tried.iter().map(|p| format!("  {}", p.display())).collect::<Vec<_>>().join("\n")
+    )
 }
 
 /// Per-segment validation info from a package's ValidationURL. TYPE2 = SHA-256

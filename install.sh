@@ -42,6 +42,30 @@ for t in "${RUNTIME_TOOLS[@]}"; do
     install -Dm644 "$REPO/tools/$t" "$SHARE/tools/$t"
 done
 
+# The public ACCCx runtime packages. seed_runtime() extracts ADC/ADC64 from these
+# to put HDBox/HDPIM into a prefix, so WITHOUT THEM NO INSTALL CAN RUN. They were
+# resolved from $HOME/mudhut-parent-stage/packages -- a dev-box scratch dir that
+# exists on exactly one machine, so every install elsewhere died naming a
+# directory the user was never given. Ship them beside the binary instead.
+#
+# Only ADC, ADC64 and ApplicationInfo.xml are needed: verified by extracting from
+# a subset containing just those (31 components, 426 files, HDPIM.dll landing in
+# the right HDBox path). AAM/ACC/ACC64 are a further 77 MB the install leg never
+# reads.
+ACCC_SRC="${MUDHUT_ACCC_SRC:-$HOME/mudhut-parent-stage/packages}"
+if [ -d "$ACCC_SRC" ]; then
+    echo "==> staging the ACCCx runtime packages (~242 MB)"
+    rm -rf "$SHARE/accc-packages"
+    mkdir -p "$SHARE/accc-packages"
+    for _s in ADC ADC64 ApplicationInfo.xml; do
+        [ -e "$ACCC_SRC/$_s" ] || { echo "!! missing $ACCC_SRC/$_s"; exit 1; }
+        cp -a "$ACCC_SRC/$_s" "$SHARE/accc-packages/"
+    done
+else
+    echo "!! ACCCx packages not found at $ACCC_SRC — 'mudhut install' will refuse to run."
+    echo "   Set MUDHUT_ACCC_SRC to their location and re-run."
+fi
+
 mkdir -p "$BIN"
 ln -sfn "$SHARE/mudhut" "$BIN/mudhut"
 echo "==> linked $BIN/mudhut -> $SHARE/mudhut"
