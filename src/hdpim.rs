@@ -587,6 +587,16 @@ fn run_hdpim(
             Ok(())
         });
     }
+    // Capture the host's output to a FILE so we can watch it for HDPIM's own
+    // completion signal — and so its chatter never lands in the stdout pipe
+    // Collider reads as NDJSON.
+    let mut host_log_path = std::env::temp_dir();
+    host_log_path.push(format!("mudhut-hdpim-{}.log", std::process::id()));
+    let host_log = std::fs::File::create(&host_log_path)
+        .with_context(|| format!("creating {}", host_log_path.display()))?;
+    let host_log2 = host_log.try_clone().context("duplicating the host log fd")?;
+    cmd.stdout(Stdio::from(host_log)).stderr(Stdio::from(host_log2));
+
     let mut child = cmd.spawn().context("spawning hdpim_host")?;
 
     let started = Instant::now();
@@ -598,18 +608,70 @@ fn run_hdpim(
                 format!("hdpim_host exited ({status}) but no installed {} exe found", cat.name)
             })?;
         }
-        if let Some(exe) = find_installed_exe(prefix, cat) {
-            if verify(&exe).is_ok() {
-                em.progress("install", 90, "installed — stopping host");
-                let _ = child.kill();
-                let _ = child.wait();
-                break exe;
-            }
+        // ⛔ DO NOT stop just because the main executable exists.
+        //
+        // That is what this did, and it shipped a broken install: Photoshop.exe is
+        // ONE payload of ~40 and lands early, so killing the host on sight of it
+        // terminated HDPIM while it was still laying down the rest of the
+        // application directory, Camera Raw, Color, CoreSync and the CC pieces.
+        // Photoshop then refuses to start with "Some of the Application components
+        // are missing from the Application directory" and "Adobe Creative Cloud …
+        // is missing or damaged". It survived on the dev box only because that
+        // prefix had been installed into repeatedly; a FRESH prefix does not.
+        //
+        // HDPIM says when it is finished — "All N tasks completed." from its
+        // ProgressManager. Use that.
+        let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
+
+        // HDPIM refuses to install over an existing install: it fails the workflow
+        // (error 130) and releases its locks. The old code could not see that — it
+        // stopped as soon as the app's exe existed, which on a reinstall is
+        // IMMEDIATELY, so it reported "installed" having done nothing at all. A
+        // user trying to repair a damaged install got a success message and an
+        // unchanged prefix. Surface it instead.
+        if let Some(i) = log.find("Error occurred in install product workflow with error code") {
+            let code: String = log[i..]
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&host_log_path);
+            let already = find_installed_exe(prefix, cat).is_some();
+            let hint = if already {
+                format!(
+                    "\n\n{} is ALREADY installed in this prefix, and HDPIM will not install over \
+                     it — so a reinstall cannot repair a damaged copy. Install into a fresh prefix, \
+                     or remove the existing application directory under\n  {}",
+                    cat.name,
+                    prefix.join("drive_c/Program Files/Adobe").display()
+                )
+            } else {
+                String::new()
+            };
+            bail!("HDPIM refused the install (workflow error {code}).{hint}");
+        }
+
+        if log.contains("tasks completed.") {
+            let exe = find_installed_exe(prefix, cat)
+                .context("HDPIM reported all tasks completed but no installed exe was found")?;
+            verify(&exe)?;
+            em.progress("install", 90, "all HDPIM tasks completed — stopping host");
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&host_log_path);
+            break exe;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("HDPIM install timed out (no decrypted exe after 2400s)");
+            let tail: Vec<&str> = log.lines().rev().take(5).collect();
+            let _ = std::fs::remove_file(&host_log_path);
+            bail!(
+                "HDPIM install timed out after 2400s without reporting completion.\nLast lines:\n{}",
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            );
         }
         // Report progress DURING the decrypt. Without this the CLI emitted nothing
         // between "seed" (25%) and "installed" (90%), so Collider's bar sat frozen
@@ -624,11 +686,18 @@ fn run_hdpim(
         // is still moving, which is the honest way round.
         let secs = Instant::now().saturating_duration_since(started).as_secs();
         let mb = dir_size_mb(prefix, cat);
+        // HDPIM logs a line per finished task; counting them is a real signal the
+        // user can watch, unlike an elapsed-time ramp.
+        let tasks = log.matches("Completed 'INSTALL' task").count();
         let pct = 25u8 + (60.0 * (1.0 - (-(secs as f64) / 420.0).exp())) as u8;
         em.progress(
             "install",
             pct.min(85),
-            &format!("HDPIM decrypt · {mb} MB written · {}m{:02}s elapsed", secs / 60, secs % 60),
+            &format!(
+                "HDPIM decrypt · {tasks} tasks done · {mb} MB written · {}m{:02}s elapsed",
+                secs / 60,
+                secs % 60
+            ),
         );
         std::thread::sleep(Duration::from_secs(10));
     };
