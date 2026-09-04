@@ -48,16 +48,19 @@ done
 # exists on exactly one machine, so every install elsewhere died naming a
 # directory the user was never given. Ship them beside the binary instead.
 #
-# Only ADC, ADC64 and ApplicationInfo.xml are needed: verified by extracting from
+# All five sets: AAM (AdobeApplicationManager), ACC/ACC64 (the Creative Cloud Desktop
+# app itself) and ADC/ADC64 (Adobe Desktop Common). Seeding only ADC/ADC64 ran the
+# install engine but left a prefix with no CC Desktop and no AdobeApplicationManager,
+# which a known-good 2025 prefix has. Verified by extracting from
 # a subset containing just those (31 components, 426 files, HDPIM.dll landing in
 # the right HDBox path). AAM/ACC/ACC64 are a further 77 MB the install leg never
 # reads.
 ACCC_SRC="${MUDHUT_ACCC_SRC:-$HOME/mudhut-parent-stage/packages}"
 if [ -d "$ACCC_SRC" ]; then
-    echo "==> staging the ACCCx runtime packages (~242 MB)"
+    echo "==> staging the ACCCx runtime packages (~318 MB)"
     rm -rf "$SHARE/accc-packages"
     mkdir -p "$SHARE/accc-packages"
-    for _s in ADC ADC64 ApplicationInfo.xml; do
+    for _s in AAM ACC ACC64 ADC ADC64 ApplicationInfo.xml; do
         [ -e "$ACCC_SRC/$_s" ] || { echo "!! missing $ACCC_SRC/$_s"; exit 1; }
         cp -a "$ACCC_SRC/$_s" "$SHARE/accc-packages/"
     done

@@ -280,7 +280,7 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
     let mut packages = Vec::new();
     let mut total_bytes = 0u64;
     for p in &manifest.packages.package {
-        if !condition_matches(&p.condition, language) {
+        if !condition_matches(&p.condition, language, &build.platform) {
             continue;
         }
         total_bytes += p.download_size;
@@ -420,16 +420,73 @@ fn print_plan_human(plan: &DownloadPlan) {
     }
 }
 
-fn condition_matches(cond: &str, lang: &str) -> bool {
+/// Whether a package's `Condition` applies to the install we are performing.
+///
+/// ⛔ This used to return TRUE for every non-language condition ("assume
+/// applicable"), which meant we demanded packages for platforms we are not
+/// installing: a win64 install asked for the win7 build (`[OSVersion]<=6.3`) and
+/// the 32-bit build (`[OSProcessorFamily]==32-bit`). On the download path that is
+/// merely wasteful. On the OFFLINE path it is fatal — the completeness check sees
+/// payloads that were never meant to be staged, declares the component
+/// incomplete, and SKIPS IT. That is why Creative Cloud Experience (CCXP) was
+/// dropped from every offline install even though its x64 payload was present.
+///
+/// Grammar, taken from the real manifests, `&&`-joined:
+///   [OSProcessorFamily]==64-bit          [OSVersion]>=10.0
+///   [OSProcessorFamily]==32-bit          [OSVersion]<=6.3
+///   [installLanguage]==en_US
+///
+/// Anything not understood still returns true, so an unrecognised condition can
+/// never silently drop a package we would previously have installed.
+fn condition_matches(cond: &str, lang: &str, platform: &str) -> bool {
     if cond.is_empty() {
         return true;
     }
-    if cond.contains("installLanguage") {
-        cond.contains(&format!("=={lang}"))
-    } else {
-        // OS/other conditions — assume applicable for the resolved platform.
+    // We spoof Windows 11 24H2 (see hdpim::setup_prefix), so 10.0 is the version
+    // an installer sees. win64 unless the build says otherwise.
+    let os_version: f64 = 10.0;
+    let is_64 = !platform.eq_ignore_ascii_case("win32");
+
+    cond.split("&&").all(|clause| {
+        let c = clause.trim();
+        if c.contains("installLanguage") {
+            return c.contains(&format!("=={lang}"));
+        }
+        if c.contains("OSProcessorFamily") {
+            if c.contains("64-bit") {
+                return is_64 == c.contains("==");
+            }
+            if c.contains("32-bit") {
+                return (!is_64) == c.contains("==");
+            }
+            return true;
+        }
+        if let Some(rest) = c.split("[OSVersion]").nth(1) {
+            let rest = rest.trim();
+            let (op, num) = if let Some(n) = rest.strip_prefix(">=") {
+                (">=", n)
+            } else if let Some(n) = rest.strip_prefix("<=") {
+                ("<=", n)
+            } else if let Some(n) = rest.strip_prefix("==") {
+                ("==", n)
+            } else if let Some(n) = rest.strip_prefix('>') {
+                (">", n)
+            } else if let Some(n) = rest.strip_prefix('<') {
+                ("<", n)
+            } else {
+                return true; // unparsed -> keep
+            };
+            let Ok(want) = num.trim().parse::<f64>() else { return true };
+            return match op {
+                ">=" => os_version >= want,
+                "<=" => os_version <= want,
+                "==" => (os_version - want).abs() < f64::EPSILON,
+                ">" => os_version > want,
+                _ => os_version < want,
+            };
+        }
         true
-    }
+    })
 }
 
 /// Split a dotted version ("27.8" / "27.8.0.13") into a comparable component vec.

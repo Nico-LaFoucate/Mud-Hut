@@ -522,7 +522,18 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
 }
 
 /// Seed Adobe Desktop Common (HDBox/HDPIM + ESD engine + ADS/IPCBroker) from the
-/// public ACCCx `.pima`. `--sets ADC,ADC64` is the install-leg runtime.
+/// public ACCCx `.pima`.
+///
+/// ⭐ ALL FIVE SETS. This used to extract only `ADC,ADC64` — Adobe Desktop Common,
+/// enough to run the HDPIM install engine but NOT enough to leave a working
+/// desktop behind. The result was a prefix with no `AdobeApplicationManager` and
+/// no Creative Cloud Desktop, which a comparison against a known-good 2025 prefix
+/// shows it should have:
+///   AAM        -> AdobeApplicationManager (IPC)            688 KB
+///   ACC/ACC64  -> the Creative Cloud Desktop app itself     77 MB
+///   ADC/ADC64  -> Adobe Desktop Common (HDBox/HDPIM, ADS, IPCBox)
+/// The extractor is idempotent — it writes only files that are absent and reports
+/// the rest as "already present" — so this re-runs safely on a populated prefix.
 fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     let out = Command::new("python3")
         .arg(&cfg.extractor)
@@ -531,7 +542,7 @@ fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
         .arg("--prefix")
         .arg(prefix)
         .arg("--sets")
-        .arg("ADC,ADC64")
+        .arg("AAM,ACC,ACC64,ADC,ADC64")
         .output()
         .context("running extract_accc_runtime.py")?;
     if !out.status.success() {
