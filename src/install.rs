@@ -129,12 +129,17 @@ fn run_inner(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Re
     em.progress("provision", 100, "neutron prefix provision");
     provision(prefix).context("neutron prefix provision failed")?;
 
-    // Best-effort application-menu launcher for each installed app.
-    for id in &acq.app_ids {
-        if let Some(app) = crate::catalog::find(id) {
-            let _ = crate::desktop::install_entry(em, &app, prefix);
-        }
-    }
+    // Application-menu launchers, icons and file associations are written BY PROVISION
+    // (`register_app_desktop_entries` in bin/neutron): one `neutron-<app>-<prefix slug>.desktop`
+    // per app per prefix, pinned to the prefix's runtime, with the StartupWMClass wine advertises.
+    //
+    // 🚨 2026-09-18: Mud Hut used to write its OWN `mudhut-<app>.desktop` here, AFTER provision --
+    // keyed on the app alone, unpinned, with no StartupWMClass, and claiming MIME defaults with
+    // `xdg-mime default`. So every install ended with two launchers for the app, the second
+    // install of an app into another prefix overwrote the first's entry, and the mudhut one stole
+    // back the associations provision had just repaired -- until the NEXT provision retired it
+    // again. Two writers of one file, one of them wrong. Mud Hut installs; the engine owns the
+    // desktop identity.
 
     finish(em, InstallResult {
         ok: true, dry_run: false, prefix: prefix.display().to_string(),

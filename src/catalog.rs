@@ -33,10 +33,12 @@ pub struct App {
     /// in `Support Files/Contents/Windows/`. Guessing this from the app name is
     /// what made a finished After Effects install look like a decrypt that hung.
     pub exe: &'static str,
-    /// Freedesktop `Categories=` for the generated `.desktop` launcher.
+    /// Freedesktop `Categories=` — informational, exported in `mudhut apps` JSON. Mud Hut
+    /// writes no `.desktop` launcher of its own (2026-09-18): `neutron prefix provision` owns
+    /// launchers, icons and file associations, one entry per app per prefix.
     pub categories: &'static str,
-    /// MIME types the app opens (`MimeType=`), for XDG file associations. Only
-    /// well-registered types are listed; empty = launcher only, no associations.
+    /// MIME types the app opens — informational, exported in `mudhut apps` JSON. The engine's
+    /// own `APP_MIME_TYPES` (and its `neutron-adobe.xml` package) decide what a launcher claims.
     pub mime: &'static [&'static str],
 }
 

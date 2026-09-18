@@ -4,9 +4,9 @@
 
 Mud Hut is a small, non-interactive CLI that automates deploying the Adobe
 Creative Suite onto Linux. It acquires the app (download it straight from Adobe,
-or copy an existing Windows install), sets up the prefix, provisions it to be
-Neutron-ready, and installs a menu launcher — so the experience is *"run it and
-it just works."*
+or copy an existing Windows install), sets up the prefix, and provisions it to be
+Neutron-ready (provision also writes the menu launchers, one per app per prefix) —
+so the experience is *"run it and it just works."*
 
 It is an **orchestrator only**: it never translates applications (that is
 Neutron's job) and it **never ships, patches, or modifies Adobe binaries
@@ -60,7 +60,8 @@ mudhut ledger                                       # show the resolved Adobe en
    runtime from the public ACCCx components.
 4. Drive Adobe's shipped `HDPIM.dll` (`hdpimInstallProduct`) to decrypt the payloads
    and lay down a genuine, unmodified install.
-5. `neutron prefix provision` the prefix and write a menu launcher.
+5. `neutron prefix provision` the prefix — which also writes the menu launcher, icon and
+   file associations (`neutron-<app>-<prefix>.desktop`; Mud Hut writes none of its own).
 
 The installed app is genuine and unmodified; **licensing is a separate one-time
 Adobe sign-in** (the app validates against your account via Adobe NGL). See

@@ -2,9 +2,9 @@
 //! Mud Hut — the easy way to install Adobe apps into a Neutron prefix.
 //!
 //! A non-interactive, idempotent, transactional CLI that sets up the sandbox,
-//! ingests the vendor binaries, provisions the prefix (via `neutron prefix
-//! provision`), and installs launchers. It never translates (that's Neutron's
-//! job) and never ships or patches Adobe binaries — orchestration only.
+//! ingests the vendor binaries, and provisions the prefix (via `neutron prefix
+//! provision`, which also writes the menu launchers). It never translates (that's
+//! Neutron's job) and never ships or patches Adobe binaries — orchestration only.
 //!
 //! Layering mirrors the ecosystem: Mud Hut (install+provision) -> Neutron
 //! (runtime) -> Collider (GUI). Collider drives this CLI exactly like it drives
@@ -13,7 +13,6 @@
 
 mod auth;
 mod catalog;
-mod desktop;
 mod doctor;
 mod download;
 mod driver;

@@ -135,8 +135,9 @@ pub(crate) fn hdpim_install_and_provision(
     // replacement resolves to an unregistered family -> blank menu bar.
     seed_ui_fonts(em, &exe, prefix);
     em.progress("provision", 100, "neutron prefix provision");
+    // Launchers, icons and MIME defaults are provision's (see install.rs for why Mud Hut no
+    // longer writes its own `mudhut-<app>.desktop` after this call).
     crate::install::provision(prefix)?;
-    let _ = crate::desktop::install_entry(em, cat, prefix); // best-effort menu launcher
     if em.is_json() {
         em.result(&serde_json::json!({
             "ok": true,
