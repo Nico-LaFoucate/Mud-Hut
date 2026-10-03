@@ -3,3 +3,13 @@
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Internal material: kept locally for development, never published.
+/docs/DOWNLOAD_INSTALL_*.md
+/tools/neutron-collect.sh
+/tools/TESTER_GUIDE.md
+/tools/extract_accc_runtime.DRYRUN.md
+/tools/extract_accc_runtime.REGISTRY_NOTES.md
+/tools/adobe_device_auth.py
+/tools/verify_authenticode.py
+/ROADMAP.md
