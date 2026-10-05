@@ -45,7 +45,7 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
         Some(w) => checks.push(Check { name: "wine", ok: true, required: true,
             detail: format!("install-engine wine: {}", w.display()) }),
         None => checks.push(Check { name: "wine", ok: false, required: true,
-            detail: "no wine — run `neutron runtime install` or set $MUDHUT_WINE".into() }),
+            detail: "neutron-wine isn't installed — run `neutron setup` first".into() }),
     }
 
     // The shipped tools the download engine drives. Verifies the installed layout
@@ -97,11 +97,17 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
             detail: format!("could not measure free space at {}", target.display()) }),
     }
 
-    // icoutils — optional; lets Collider show the real extracted app logos.
-    let ico = which("wrestool").is_some() && which("icotool").is_some();
-    checks.push(Check { name: "icoutils", ok: ico, required: false,
-        detail: if ico { "present (Collider shows real app logos)".into() }
-                else { "absent (Collider falls back to monogram badges)".into() } });
+    // winetricks — installs the Visual C++ runtimes and the core fonts into every prefix.
+    // Without the fonts, Premiere/AE/AME fail to start (2026-08 "video trio").
+    let wt = which("winetricks").is_some();
+    checks.push(Check { name: "winetricks", ok: wt, required: true,
+        detail: if wt { "present (Visual C++ runtimes + core fonts)".into() }
+                else { "missing — install your distro's `winetricks` package".into() } });
+
+    // Adobe's Creative Cloud package (ACCCx): seeds the installer engine. Present, or
+    // downloaded from Adobe on the first install.
+    checks.push(Check { name: "accc", ok: true, required: false,
+        detail: crate::download::accc_status() });
 
     let ready = checks.iter().all(|c| !c.required || c.ok);
     let report = Report { ready, checks };

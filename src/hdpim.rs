@@ -135,20 +135,6 @@ pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
             }
         }
     }
-    // 3. Neutron dev build tree — mirrors neutron's own NEUTRON_WINE_CANDIDATES so a
-    //    dev machine (no runtime release installed yet) resolves the same wine that
-    //    neutron launches the app under. Superseded by (2) once a runtime is installed.
-    if let Some(home) = &home {
-        for rel in [
-            "neutron/dist/wine/bin/wine",
-            "wine-tkg-git/wine-tkg-git/src/wine-tkg-staging-ntsync-git-64-build/wine",
-        ] {
-            let p = home.join(rel);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
     None
 }
 
@@ -477,7 +463,11 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     // reported success produced a prefix whose video apps could not launch.
     // Installing them here, where winetricks already runs and the user expects
     // the slow part, is what makes "a working, launchable prefix" true.
-    if which("winetricks").is_some() {
+    if which("winetricks").is_none() {
+        bail!("winetricks is missing — install your distro's `winetricks` package. Mud Hut uses it \
+               to add the Visual C++ runtimes and the core fonts the Adobe apps need.");
+    }
+    {
         em.progress("prereqs", 15, "winetricks vcrun2022 + vcrun2013 + corefonts");
         let mut c = Command::new("winetricks");
         c.args(["-q", "-f", "vcrun2022", "vcrun2013", "corefonts"])
@@ -499,13 +489,6 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
             ),
             Err(e) => em.note(&format!("winetricks could not run: {e}")),
         }
-    } else {
-        em.note(
-            "winetricks not found — VC++ redists AND core fonts not installed. \
-             Premiere/After Effects/Media Encoder will fail at startup without the \
-             real Microsoft fonts; install winetricks and re-run, or run \
-             `winetricks -q -f corefonts` against this prefix.",
-        );
     }
     // Flush the registry cleanly — but BOUNDED.
     //

@@ -43,6 +43,8 @@ pub fn install(
     source: Option<&Path>,
     prefix: &Path,
     dry_run: bool,
+    minimal: bool,
+    keep_download: bool,
 ) -> Result<()> {
     let app_id = app.context("`--method download` needs an app id (e.g. `photoshop`)")?;
     let cat = crate::catalog::find(app_id)
@@ -53,7 +55,7 @@ pub fn install(
     let build = crate::feed::resolve_build(em, &ledger, app_id)?;
     let (manifest, raw_manifest) = crate::feed::fetch_manifest(em, &ledger, &build)?;
     let mut plan = crate::feed::plan(&build, &manifest, "en_US");
-    let dep_builds = crate::feed::resolve_dependencies(em, &ledger, &plan.dependencies)?;
+    let dep_builds = crate::feed::resolve_dependencies(em, &ledger, &plan.dependencies, minimal)?;
 
     // The DriverInfo's dependency list must match what's actually staged: keep only
     // the deps we resolved + will download (drops the deferred/unresolvable ones).
@@ -108,7 +110,19 @@ pub fn install(
     let driver_xml = crate::driver::write_driver_xml(&plan, &products)?;
 
     // Shared HDPIM tail (same engine `offline` uses).
-    hdpim_install_and_provision(em, &cat, &driver_xml, &products, prefix, "download", dry_run)
+    hdpim_install_and_provision(em, &cat, &driver_xml, &products, prefix, "download", dry_run)?;
+
+    // The downloaded packages are tens of GB and are never read again once installed.
+    // Only OUR cache is removed — never a caller-supplied --source.
+    if source.is_none() && !keep_download {
+        if let Some(cache_dir) = products.parent() {
+            match fs::remove_dir_all(cache_dir) {
+                Ok(()) => em.note(&format!("removed the download cache {}", cache_dir.display())),
+                Err(e) => em.note(&format!("could not remove {}: {e}", cache_dir.display())),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The shared install tail for the HDPIM-engine methods (`download` + `offline`):
@@ -123,7 +137,7 @@ pub(crate) fn hdpim_install_and_provision(
     method: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir()?, Some(prefix))?;
+    let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir(em)?, Some(prefix))?;
     let exe = crate::hdpim::install(em, &cfg, prefix, cat, driver_xml, products, dry_run)?;
 
     if dry_run {
@@ -257,52 +271,153 @@ pub(crate) fn repo_tools_dir() -> Result<PathBuf> {
     Ok(PathBuf::from("tools"))
 }
 
-/// Staged public ACCCx runtime packages: `$MUDHUT_ACCC_PACKAGES`, else the
-/// conventional stage under `$HOME`.
-/// The staged public ACCCx runtime packages that `seed_runtime` extracts to put
-/// HDBox/HDPIM into a prefix. Without them NO install can run.
+/// Adobe's public Creative Cloud package (ACCCx) that seeds HDBox/HDPIM into a prefix. Without
+/// it NO install can run. Pinned like the runtime: a newer build is adopted only after a
+/// clean-room test. Adobe's own download page links these zips; Neutron never redistributes it.
+const ACCC_VERSION: &str = "6.5.0.348";
+const ACCC_URL: &str = "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.5.0/348/win64/ACCCx6_5_0_348.zip";
+const ACCC_MD5: &str = "33a015138f2938690267a54e3a21f63e";
+
+fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
+        .with_context(|| format!("no HOME/{var}"))
+}
+
+/// The ACCCx `packages/` dir: `$MUDHUT_ACCC_PACKAGES`, else `accc-packages/` beside the binary
+/// (the tester bundle), else the copy downloaded from Adobe into
+/// `$XDG_DATA_HOME/neutron/accc/<version>/packages` (fetched + md5-verified on first use).
 ///
-/// ⛔ This used to return `$HOME/mudhut-parent-stage/packages` unconditionally —
-/// a DEV-BOX scratch path. It exists here and nowhere else, so every install on
-/// every other machine died at discover() with
-/// "ACCCx runtime packages dir not found: /home/<them>/mudhut-parent-stage/packages",
-/// naming a directory they were never given and could not create. Reported by a
-/// build tester 2026-09-04. Same failure family as the hardcoded default prefix:
-/// a path that happens to exist on the machine it was written on.
-///
-/// Resolution order mirrors `repo_tools_dir()`: explicit override, then the
-/// SHIPPED copy beside the binary, then the dev tree, and only then the old
-/// scratch path so a dev box keeps working.
-fn accc_packages_dir() -> Result<PathBuf> {
+/// ⛔ Never a dev-box scratch path: `$HOME/mudhut-parent-stage/packages` used to be the answer
+/// here and it exists on exactly one machine (build tester, 2026-09-04).
+fn accc_packages_dir(em: &Emitter) -> Result<PathBuf> {
     if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
         return Ok(PathBuf::from(p));
     }
-    let mut tried: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             for cand in [dir.join("accc-packages"), dir.join("../../accc-packages")] {
                 if cand.is_dir() {
                     return Ok(cand.canonicalize().unwrap_or(cand));
                 }
-                tried.push(cand);
             }
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let dev = PathBuf::from(home).join("mudhut-parent-stage/packages");
-        if dev.is_dir() {
-            return Ok(dev);
-        }
-        tried.push(dev);
+    let root = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("neutron/accc").join(ACCC_VERSION);
+    let packages = root.join("packages");
+    let marker = root.join(".verified");
+    if packages.is_dir() && marker.is_file() {
+        return Ok(packages);
     }
-    bail!(
-        "the ACCCx runtime packages are missing — Mud Hut cannot seed a prefix without them.\n\
-         Looked in:\n{}\n\
-         They ship beside the mudhut binary as `accc-packages/`. If you installed from a \
-         Neutron stack bundle and this is missing, the bundle is incomplete — please report it. \
-         To point at a copy elsewhere, set MUDHUT_ACCC_PACKAGES.",
-        tried.iter().map(|p| format!("  {}", p.display())).collect::<Vec<_>>().join("\n")
-    )
+    fetch_accc(em, &root)?;
+    Ok(packages)
+}
+
+/// One line for `mudhut doctor`: where the ACCCx packages are, or that they'll be downloaded.
+pub(crate) fn accc_status() -> String {
+    if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
+        return format!("MUDHUT_ACCC_PACKAGES={p}");
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("accc-packages").is_dir() {
+                return format!("bundled beside the binary ({})", dir.join("accc-packages").display());
+            }
+        }
+    }
+    match xdg_dir("XDG_DATA_HOME", ".local/share") {
+        Ok(d) if d.join("neutron/accc").join(ACCC_VERSION).join(".verified").is_file() =>
+            format!("Adobe Creative Cloud package {ACCC_VERSION} ready"),
+        _ => format!("Adobe Creative Cloud package {ACCC_VERSION} will be downloaded from Adobe on the first install"),
+    }
+}
+
+/// Download Adobe's ACCCx zip, verify its MD5 against the pin, and extract `packages/` into
+/// `root`. The zip is cached (`$XDG_CACHE_HOME/neutron/`) until the extraction succeeds.
+fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
+    let cache = xdg_dir("XDG_CACHE_HOME", ".cache")?.join("neutron");
+    fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
+    let zip = cache.join(format!("ACCCx{}.zip", ACCC_VERSION.replace('.', "_")));
+
+    let md5_of = |p: &Path| -> Result<String> {
+        let mut f = File::open(p).with_context(|| format!("opening {}", p.display()))?;
+        let mut h = Md5::new();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            Digest::update(&mut h, &buf[..n]);
+        }
+        Ok(format!("{:x}", h.finalize()))
+    };
+
+    if !(zip.is_file() && md5_of(&zip)? == ACCC_MD5) {
+        em.progress("accc", 1, &format!("downloading Adobe's Creative Cloud package {ACCC_VERSION}"));
+        let resp = ureq::builder()
+            .timeout_connect(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(120))
+            .build()
+            .get(ACCC_URL)
+            .call()
+            .map_err(|e| anyhow::anyhow!(
+                "could not download Adobe's Creative Cloud package ({e}).\n\
+                 If Adobe has removed version {ACCC_VERSION}, download the Creative Cloud desktop \
+                 app's direct-link zip from Adobe and point MUDHUT_ACCC_PACKAGES at its \
+                 extracted packages/ folder."))?;
+        let total: u64 = resp.header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let tmp = zip.with_extension("zip.part");
+        let mut out = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        let mut rd = resp.into_reader();
+        let mut buf = vec![0u8; 1 << 20];
+        let (mut done, mut last) = (0u64, 0u8);
+        loop {
+            let n = rd.read(&mut buf).context("downloading the Creative Cloud package")?;
+            if n == 0 {
+                break;
+            }
+            out.write_all(&buf[..n])?;
+            done += n as u64;
+            if total > 0 {
+                let pct = (done * 100 / total) as u8;
+                if pct >= last + 5 {
+                    last = pct;
+                    em.progress("accc", pct, &format!("Creative Cloud package {}%", pct));
+                }
+            }
+        }
+        out.flush()?;
+        drop(out);
+        let got = md5_of(&tmp)?;
+        if got != ACCC_MD5 {
+            let _ = fs::remove_file(&tmp);
+            bail!("the Creative Cloud package from Adobe failed verification (md5 {got}, expected {ACCC_MD5})");
+        }
+        fs::rename(&tmp, &zip)?;
+    }
+
+    // Extract only packages/ (python3's zipfile: the extractor already needs python3).
+    em.progress("accc", 100, "extracting the Creative Cloud package");
+    let _ = fs::remove_dir_all(root);
+    fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
+    let py = "import sys, zipfile\n\
+              z = zipfile.ZipFile(sys.argv[1])\n\
+              z.extractall(sys.argv[2], [n for n in z.namelist() if n.startswith('packages/')])\n";
+    let st = std::process::Command::new("python3")
+        .args(["-c", py])
+        .arg(&zip)
+        .arg(root)
+        .status()
+        .context("running python3 to extract the Creative Cloud package")?;
+    if !st.success() || !root.join("packages/ApplicationInfo.xml").is_file() {
+        bail!("extracting {} failed", zip.display());
+    }
+    fs::write(root.join(".verified"), format!("{ACCC_VERSION} {ACCC_MD5}\n"))?;
+    let _ = fs::remove_file(&zip);
+    em.note(&format!("Adobe Creative Cloud package {ACCC_VERSION} ready in {}", root.display()));
+    Ok(())
 }
 
 /// Per-segment validation info from a package's ValidationURL. TYPE2 = SHA-256

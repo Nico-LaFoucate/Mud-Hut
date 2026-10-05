@@ -11,7 +11,6 @@
 //! `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
 //! last of which is the terminal `result`/`error`.
 
-mod auth;
 mod catalog;
 mod doctor;
 mod download;
@@ -87,25 +86,6 @@ enum Cmd {
         #[arg(long)]
         only: Option<String>,
     },
-    /// Adobe sign-in (device/QR flow). Collider drives these: `begin` once, then
-    /// `poll` every few seconds until the user has signed in.
-    Auth {
-        #[command(subcommand)]
-        action: AuthAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum AuthAction {
-    /// Mint the login link + QR. Returns { url, qr, request_id, device_id }.
-    Begin,
-    /// Poll once; runs the token exchange when sign-in completes.
-    Poll {
-        #[arg(long)]
-        request_id: String,
-        #[arg(long)]
-        device_id: String,
-    },
 }
 
 #[derive(Args)]
@@ -136,6 +116,16 @@ struct InstallArgs {
     /// Plan and report without copying or mutating the prefix.
     #[arg(long)]
     dry_run: bool,
+
+    /// `--method download`: skip the add-on components (Camera Raw, Libraries, CoreSync).
+    /// A smaller download for testing; the default installs everything the app lists.
+    #[arg(long)]
+    minimal: bool,
+
+    /// `--method download`: keep the downloaded packages after a successful install
+    /// (default: delete them; they can be tens of GB).
+    #[arg(long)]
+    keep_download: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -165,7 +155,8 @@ fn main() -> ExitCode {
         Cmd::Install(a) => ensure_prefix_dir(&a.prefix, a.dry_run).and_then(|()| match a.method {
             // download has its own decrypt-install engine (HDPIM), not copy-staging.
             Method::Download => {
-                download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run)
+                download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run,
+                                  a.minimal, a.keep_download)
             }
             // windows: acquire (copy discovery) -> stage + provision (shared).
             Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite)
@@ -180,10 +171,6 @@ fn main() -> ExitCode {
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
         }
-        Cmd::Auth { action } => match action {
-            AuthAction::Begin => auth::cmd_begin(&em),
-            AuthAction::Poll { request_id, device_id } => auth::cmd_poll(&em, &request_id, &device_id),
-        },
     };
 
     match result {

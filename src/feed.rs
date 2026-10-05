@@ -127,11 +127,10 @@ pub struct PlannedPackage {
     pub validation_url: String,
 }
 
-/// Dependency components the proven install deliberately trims: Libraries (CCXP),
-/// Camera Raw (ACR), CoreSync (COSY) — peripheral and needing extra (macOS-LaunchAgent
-/// / delta) artifacts not in the win64 ESD set. Matches the known-good Driver_core.xml.
-/// (Re-adding them is a follow-up once their ESD artifacts are resolved.)
-pub const DEFERRED_DEPS: &[&str] = &["CCXP", "ACR", "COSY"];
+/// Add-on components skipped only by `--minimal` (a smaller download for testing):
+/// Libraries (CCXP), Camera Raw (ACR), CoreSync (COSY). The default installs every
+/// component the app's manifest lists.
+pub const MINIMAL_SKIP_DEPS: &[&str] = &["CCXP", "ACR", "COSY"];
 
 /// Find the highest-versioned `<product id=sap>` that has a `<languageSet>` for
 /// `platform`, returning (build_guid, product_version, feed_version).
@@ -204,17 +203,18 @@ pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Buil
 
 /// Resolve the downloadable dependency components for `deps` from the product feed.
 /// The feed is queried for BOTH platforms (deps often ship win32, not win64); each
-/// dep is tried win64 first, then win32. Deps in [`DEFERRED_DEPS`] are skipped, and a
-/// dep not found in the feed is skipped with a note (never fatal). Fetches the feed
-/// once and resolves all deps against it.
+/// dep is tried win64 first, then win32. With `minimal`, deps in [`MINIMAL_SKIP_DEPS`]
+/// are skipped; a dep not found in the feed is skipped with a note (never fatal).
+/// Fetches the feed once and resolves all deps against it.
 pub fn resolve_dependencies(
     em: &Emitter,
     ledger: &Ledger,
     deps: &[Dependency],
+    minimal: bool,
 ) -> Result<Vec<Build>> {
     let wanted: Vec<&Dependency> = deps
         .iter()
-        .filter(|d| !DEFERRED_DEPS.contains(&d.sap.as_str()))
+        .filter(|d| !(minimal && MINIMAL_SKIP_DEPS.contains(&d.sap.as_str())))
         .collect();
     if wanted.is_empty() {
         return Ok(vec![]);
