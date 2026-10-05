@@ -9,9 +9,9 @@ Neutron-ready (provision also writes the menu launchers, one per app per prefix)
 so the experience is *"run it and it just works."*
 
 It is an **orchestrator only**: it never translates applications (that is
-Neutron's job) and it **never ships, patches, or modifies Adobe binaries
-or DRM**. It uses Adobe's own signed installer components and the user's own
-license.
+Neutron's job), and it **never ships, modifies or patches Adobe binaries, and never
+bypasses licensing**. It drives Adobe's own installer library, and you sign in to your
+own Adobe account inside the app.
 
 ```
 Mud Hut  (acquire + install + provision)
@@ -65,7 +65,7 @@ mudhut ledger                                       # show the resolved Adobe en
 
 The installed app is genuine and unmodified; **licensing is a separate one-time
 Adobe sign-in** (the app validates against your account via Adobe NGL). See
-`docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md` for the full method.
+[`docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md`](docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md) for how it works.
 
 ### How `--method offline` works
 
@@ -130,3 +130,8 @@ cargo test              # unit tests
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Mud Hut contains no
 Adobe code or assets.
+
+## Disclaimer
+
+Neutron is an independent project by Nico LaFoucate and Ficus Media Group. Adobe and its product
+names are trademarks of Adobe Inc. Neutron is not affiliated with or endorsed by Adobe.

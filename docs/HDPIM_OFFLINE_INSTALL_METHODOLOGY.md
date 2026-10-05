@@ -1,74 +1,47 @@
-# Adobe Offline-Install Methodology — driving HDPIM.dll directly (2026-07-08 breakthrough)
+# How Mud Hut installs Adobe apps
 
-**Summary:** Install a genuine Adobe app **offline, fully decrypted — no Windows box, no Creative Cloud
-desktop UI, no `Set-up.exe`** — by writing a tiny 32-bit host that `LoadLibrary`s Adobe's own shipped
-`HDPIM.dll` and calls its exported `hdpimInstallProduct` directly. HDPIM builds `Media_db.db` and decrypts
-the encrypted payloads itself. Orchestration only: no Adobe binary modified, no DRM reimplemented, no Adobe
-binary shipped. Verified: genuine PS 27.8 `Photoshop.exe` (269,727,216 B, PE32+ x86-64), 5.3 GB / 8777 files.
+Mud Hut installs a genuine, unmodified Adobe app into a Wine prefix without a Windows machine and without
+the Creative Cloud desktop app. It never ships, modifies or patches Adobe binaries, and never bypasses
+licensing: Adobe's own installer library does the installing, and you sign in to your own Adobe account
+inside the app on first launch.
 
-## 1. Host mechanism (`~/mudhut-hdpim-host/hdpim_host.c`, PE32 / 32-bit)
-`LoadLibraryExA(HDPIM.dll, LOAD_WITH_ALTERED_SEARCH_PATH)` then, all `__cdecl`, all strings UTF-16:
-- `hdpimSetLoggerFnPtr(logfn)` — variadic wide logger `(level, module, cat, _, _, fmt, ...)`.
-- `hdpimCreateSession(wchar_t** outSid, logfn, NULL)` → `*outSid = L"{GUID}"`, ret 0.
-- `hdpimInstallProduct(sid, driverInfoXmlWide, progressCb)` — **all 3 args non-NULL**; returns 0 immediately (async on worker thread).
-- `hdpimTerminateSession(sid)` at the end.
-- **arg3 is a CALLBACK FUNCTION POINTER** (HDPIM does `call cb`), return ≥0 = continue. Pass a real no-op `int __cdecl cb(...){return 0;}` (a data buffer here → execute-fault, EIP == buffer).
-- Host: `CoInitializeEx(APARTMENTTHREADED)`, **CWD = Driver.xml dir** (so `EsdDirectory ./PHSP` resolves), `SetDllDirectory(HDBox dir)` (sibling ESD DLLs HDZIP/HDNative/HDIM/HUM), read XML → `MultiByteToWideChar(CP_UTF8)`, then pump messages until the async install finishes (judge by log + on-disk PE, not the return code).
-- Build: `i686-w64-mingw32-windres host.rc -O coff -o host_res.o && i686-w64-mingw32-gcc -O2 -o hdpim_host.exe hdpim_host.c host_res.o -lole32` (`host.rc` = `1 24 "host.manifest"`).
-- Other HDPIM exports: hdpimGetProductInstallStatus(10), …InstalledVersions(11), …LaunchPath(12), …InstallProduct(14), …InstallUpdate(15), …TerminateSession(20), …UnInstallProduct(21).
+## The steps
 
-## 2. DriverInfo XML (`~/mudhut-pkgs/PHSP-27.8-win64/products/Driver_core.xml`)
-`<DriverInfo><ProductInfo>` PHSP / CodexVersion 27.8 / BaseVersion 27.0 / Platform win64 /
-`EsdDirectory ./PHSP` / `IsNonCCProduct false` / `IsNglEnabled true` / `SupportedLanguages en_US` +
-`<Dependencies>` (8: COCM CORG CORE COPS UXPW UAM SEPS COMP) `</ProductInfo>`
-`<RequestInfo><InstallDir>C:\Program Files\Adobe</InstallDir><InstallLanguage>en_US</InstallLanguage>`.
-Trimmed from the full 11-dep `Driver.xml` by dropping **COSY, ACR, CCXP** (see §5). `EsdDirectory` **may be relative OR absolute**. A *relative* value resolves against the
-Driver.xml's own directory (NOT the process CWD) — which is why a relative XML must sit
-beside the `<SAP>/` payload dirs. ✅ **An ABSOLUTE `Z:\...\<SAP>` also works — verified
-2026-09-03**: HDPIM resolved the payloads and began extracting with the XML in `/tmp`,
-outside the package entirely. So the XML does NOT have to live in the package, and the
-payloads can sit on read-only media (a mounted ISO). ⛔ The earlier "the package dir must
-be writable" framing was wrong: nothing is written to the payload media by the install —
-the only write was our own relative-path XML. `InstallDir` in this same XML was always
-absolute, which should have been the clue. ⚠️ Rust `src/driver.rs` does NOT yet emit BaseVersion/IsNglEnabled/
-IsNonCCProduct/SupportedLanguages/absolute InstallDir — productionize it to this shape.
+1. **Resolve the app.** Mud Hut reads Adobe's public product feed to find the app's current build and the
+   shared components it depends on.
+2. **Download.** Every package comes from Adobe's CDN. Each 2 MiB segment is checked against the hashes
+   Adobe publishes for it.
+3. **Prepare the prefix.** Windows version information, the Visual C++ runtimes and the core fonts
+   (via winetricks).
+4. **Seed Adobe's installer runtime.** Mud Hut extracts Adobe's Desktop Common components, which include
+   the installer library `HDPIM.dll`, from Adobe's public Creative Cloud package (ACCCx), using
+   `tools/extract_accc_runtime.py`.
+5. **Install.** A small 32-bit host program, `tools/hdpim_host.c` (source in this repo), loads Adobe's
+   `HDPIM.dll` and calls its exported install function with a standard `Driver.xml` describing the
+   product. Adobe's library verifies, decrypts and installs the payloads itself, exactly as it does when
+   the Creative Cloud app drives it.
+6. **Provision.** `neutron prefix provision` makes the prefix Neutron-ready and writes the menu entries.
 
-## 3. WAM prevention = don't run Set-up.exe
-WAM ("online, ignores local package, wants %TEMP%\{GUID}\Driver.xml") is a **mode of Set-up.exe**. Modern
-HDBox `Set-up.exe` 5.9.0.372 is a signed WAM build; its mode can't be flag-flipped (`--edtWorkFlow`,
-`--caller=CC_HD_ESD_5_2`, `--driverXML` all still WAM) without breaking Authenticode (= forbidden). The
-root ACC `Set-up.exe` (ACCCx) has zero ESD strings (pure online). **Driving HDPIM directly has no mode
-selection, no online fetch, no `Media_db.db` FATAL, no HttpCommunicator winhttp quirk** — WAM is
-structurally eliminated. Older 4.7.0.400 Set-up.exe reached ESD mode but is too old for PS 27.8 + expired cert.
+The offline method (`--method offline`) skips steps 1 and 2 and reads the same packages from a folder or
+disc image you already have.
 
-## 4. Prefix prerequisites (mandatory)
-- **Win11 24H2 spoof** `HKLM\Software\Microsoft\Windows NT\CurrentVersion`: CurrentBuild/CurrentBuildNumber=26100, CurrentMajorVersionNumber=10, CurrentVersion=10.0, DisplayVersion=24H2, ProductName="Windows 11 Pro". **DELETE `HKCU\Software\Wine\Version`** (else Wine forces build 22000).
-- **supportedOS manifest** on the host EXE (Win10/11 GUID `{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}` is load-bearing; unmanifested GetVersionEx caps at 6.2).
-- **HDBox HDPIM.dll** `C:\Program Files (x86)\Common Files\Adobe\Adobe Desktop Common\HDBox\HDPIM.dll` — NOT `…\AdobeGCClient\HDPIM.dll` (2018, jsoncpp `LargestUInt out of UInt range` overflow on 5.6 GB ExtractSize).
-- Runtime source (HDBox + ESD DLLs + ADS/IPCBox/CEF): from the **public ACCCx zip** or a CC-desktop install — extractable, no install/WAM needed for the DLLs themselves.
+## The host program
 
-## 5. Download side (public, auth-free — sign-in only gates *running*, not downloading)
-Rust `src/{catalog,feed,download,driver}.rs` (ureq/rustls, roxmltree, sha2). Catalog:
-`prod-rel-ffc-ccm.oobesaas.adobe.com/adobe-ffc-external/core/v6/products/all?platform=win32,win64&productType=Desktop&_type=xml&channel=ccm,sti,ccd` (channel mandatory). Manifest v3 keyed by header
-`x-adobe-build-guid`. Required headers (else CDN 403): `X-Adobe-App-Id: accc-hdcore-desktop`,
-`User-Agent: Creative Cloud`, `X-Api-Key: CCHomeWeb1.0`. CDN `https://ccmdls.adobe.com` + package Path.
-Deps may be win32; Conditions gate on `[OSProcessorFamily]==64-bit`/`[OSVersion]`/`[installLanguage]`.
-`packageHashKey` is NOT plain sha256 — verify by size+valid-zip; HD re-validates at install via ValidationURL.
-Staged: `~/mudhut-pkgs/PHSP-27.8-win64/products/` (9.7 GiB, 41 pkgs). **Trimmed:** CCXP (needs macOS
-`CCXProcess-LaunchAgent.zip`, "not present in ESD Mode" 182), ACR (missing delta zips) — download those to
-re-add; COSY only failed on the arg3 bug → re-addable now.
+`tools/hdpim_host.c` loads `HDPIM.dll` from the HDBox folder and calls, in order:
 
-## 6. The six walls (chronological)
-1. Wrong DLL → jsoncpp overflow → use HDBox HDPIM. 2. Narrow XML → parse err 103 → UTF-16. 3. OS gate #1 → Win11 registry spoof. 4. OS gate #2 → supportedOS manifest. 5. arg3 execute-fault → callback pointer, no-op ret 0. 6. Incomplete deps "not present in ESD Mode" 182 → trim CCXP/ACR/COSY.
+- `hdpimSetLoggerFnPtr` — install a logger so Adobe's progress lands in Mud Hut's output
+- `hdpimCreateSession`
+- `hdpimInstallProduct(session, driverXml, progressCallback)` — runs asynchronously; the host waits
+  for it to finish
+- `hdpimTerminateSession`
 
-## 7. Reproduce
-Prefix prep (Win11 spoof + delete HKCU Wine Version) → build host → `~/mudhut-hdpim-host/run.sh [wait]`
-(sets HDPIM + `Driver_core.xml` paths, teardown + `wine hdpim_host.exe <HDPIM> <Driver> <wait>`). Success:
-`Exiting hdpimInstallProduct with status '0'` + `file …/Adobe Photoshop 2026/Photoshop.exe` == PE32+ x86-64.
+The host carries a Windows 10/11 `supportedOS` manifest, because Adobe's installer checks the OS
+version.
 
-## 8. Productionization gap (this doc → the CLI)
-Fold into `mudhut install <app> --method download`: ship/build `hdpim_host.exe`; upgrade `driver.rs` to the
-Driver_core shape; set prefix prereqs programmatically (Win11 spoof, delete HKCU Wine Version, HDBox HDPIM);
-seed the ACCC runtime (extract public zip); wire download→install one flow; re-add CCXP/ACR/COSY; one-time
-NGL sign-in via the CC-desktop CEF login (renders). ⚠️ OPEN: proven only on an already-signed-in prefix —
-fresh/unauthed-prefix E2E is the #1 de-risk.
+Build (mingw-w64), from `tools/` — see [`tools/BUILD_hdpim_host.md`](../tools/BUILD_hdpim_host.md):
+
+```bash
+cd tools
+i686-w64-mingw32-windres host.rc -O coff -o host_res.o
+i686-w64-mingw32-gcc -O2 -o hdpim_host.exe hdpim_host.c host_res.o -lole32
+```
