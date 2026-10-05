@@ -41,6 +41,22 @@ pub struct Ledger {
     pub origin: String,
 }
 
+/// Mud Hut's honest User-Agent, used for every Adobe request that accepts it (the product
+/// feed, application manifests, validation lists).
+pub const MUDHUT_USER_AGENT: &str = concat!("MudHut/", env!("CARGO_PKG_VERSION"));
+
+impl Ledger {
+    /// The ledger headers with Mud Hut's own User-Agent. Adobe's CDN is the one endpoint that
+    /// refuses it (403 unless the client says it is Adobe's installer), so only the package
+    /// downloads use `headers` as-is.
+    pub fn honest_headers(&self) -> BTreeMap<String, String> {
+        let mut h = self.headers.clone();
+        h.retain(|k, _| !k.eq_ignore_ascii_case("user-agent"));
+        h.insert("User-Agent".into(), MUDHUT_USER_AGENT.into());
+        h
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Endpoints {
     /// Product feed listing all builds. Contains a `{platform}` placeholder.

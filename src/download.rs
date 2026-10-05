@@ -473,13 +473,15 @@ pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Pat
             None
         } else {
             Some(
-                fetch_validation(&agent, &ledger.headers, &p.validation_url)
+                fetch_validation(&agent, &ledger.honest_headers(), &p.validation_url)
                     .with_context(|| format!("fetching validation for {}", p.name))?,
             )
         };
 
         let url = format!("{cdn}{}", p.path);
         let res = download_one(
+            // Adobe's CDN serves packages only to its own installer's User-Agent (tested
+            // 2026-10-05: "MudHut/0.2" -> 403), so package downloads keep the ledger's.
             em, &agent, &url, &ledger.headers, &out, validation.as_ref(),
             &mut done, total, &mut last_pct,
         );

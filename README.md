@@ -126,6 +126,17 @@ cargo build             # target/debug/mudhut (dev tree; finds ../../tools itsel
 cargo test              # unit tests
 ```
 
+## What Mud Hut sends to Adobe
+
+Mud Hut talks to Adobe's public endpoints anonymously: no account, no cookies, no tokens.
+Adobe's product feed requires two client identifiers, which Mud Hut sends:
+`X-Api-Key: CC_HD_ESD_1_0` and `X-Adobe-App-Id: accc-hdcore-desktop`. They live in
+[`ledger/ledger.json`](ledger/ledger.json).
+
+Everywhere Adobe accepts it, Mud Hut identifies itself honestly as `MudHut/<version>`. The one
+exception is Adobe's download CDN: it only serves app packages to Adobe's own installer, so
+package downloads use the User-Agent `Adobe Application Manager 2.0`.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Mud Hut contains no

@@ -184,7 +184,7 @@ pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Buil
     let url = ledger.endpoints.products_feed.replace("{platform}", &platform);
 
     em.progress("resolve", 10, &format!("product feed · {} · {}", app.sap, platform));
-    let xml = http_get_text(&url, &ledger.headers, None)
+    let xml = http_get_text(&url, &ledger.honest_headers(), None)
         .with_context(|| format!("fetching product feed {url}"))?;
     let doc = roxmltree::Document::parse(&xml).context("parsing product feed XML")?;
 
@@ -221,7 +221,7 @@ pub fn resolve_dependencies(
     }
     let url = ledger.endpoints.products_feed.replace("{platform}", "win32,win64");
     em.progress("resolve", 20, &format!("dependency feed · {} components", wanted.len()));
-    let xml = http_get_text(&url, &ledger.headers, None)
+    let xml = http_get_text(&url, &ledger.honest_headers(), None)
         .with_context(|| format!("fetching dependency feed {url}"))?;
     let doc = roxmltree::Document::parse(&xml).context("parsing dependency feed XML")?;
 
@@ -267,7 +267,7 @@ pub fn resolve_dependencies(
 pub fn fetch_manifest(em: &Emitter, ledger: &Ledger, build: &Build) -> Result<(Manifest, String)> {
     let url = &ledger.endpoints.application_manifest;
     em.progress("resolve", 45, &format!("manifest · {} {}", build.sap, build.product_version));
-    let body = http_get_text(url, &ledger.headers, Some(&build.build_guid))
+    let body = http_get_text(url, &ledger.honest_headers(), Some(&build.build_guid))
         .with_context(|| format!("fetching application manifest {url}"))?;
     let manifest = serde_json::from_str(&body).context("parsing application manifest JSON")?;
     Ok((manifest, body))
