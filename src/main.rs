@@ -68,6 +68,9 @@ enum Cmd {
     Install(InstallArgs),
     /// Show the resolved download ledger (endpoints, SAP codes, versions).
     Ledger,
+    /// Download and verify Adobe's Creative Cloud package (ACCCx) now, instead of on the first
+    /// install. `neutron setup` runs this.
+    Accc,
     /// Resolve + download an app from Adobe (feed -> buildGuid -> manifest -> plan
     /// -> fetch+verify). Without --dest, reports the plan and downloads nothing.
     Download {
@@ -168,6 +171,7 @@ fn main() -> ExitCode {
             }
         }),
         Cmd::Ledger => ledger::cmd_ledger(&em),
+        Cmd::Accc => download::prefetch_accc(&em),
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
         }

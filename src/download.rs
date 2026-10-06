@@ -314,6 +314,13 @@ fn accc_packages_dir(em: &Emitter) -> Result<PathBuf> {
     Ok(packages)
 }
 
+/// `mudhut accc`: make sure the ACCCx packages are present (downloading + verifying if needed).
+pub fn prefetch_accc(em: &Emitter) -> Result<()> {
+    let dir = accc_packages_dir(em)?;
+    em.note(&format!("Adobe Creative Cloud package {ACCC_VERSION}: {}", dir.display()));
+    Ok(())
+}
+
 /// One line for `mudhut doctor`: where the ACCCx packages are, or that they'll be downloaded.
 pub(crate) fn accc_status() -> String {
     if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
