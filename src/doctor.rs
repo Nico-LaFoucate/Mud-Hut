@@ -97,13 +97,6 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
             detail: format!("could not measure free space at {}", target.display()) }),
     }
 
-    // winetricks — installs the Visual C++ runtimes and the core fonts into every prefix.
-    // Without the fonts, Premiere/AE/AME fail to start (2026-08 "video trio").
-    let wt = which("winetricks").is_some();
-    checks.push(Check { name: "winetricks", ok: wt, required: true,
-        detail: if wt { "present (Visual C++ runtimes + core fonts)".into() }
-                else { "missing — install your distro's `winetricks` package".into() } });
-
     // Adobe's Creative Cloud package (ACCCx): seeds the installer engine. Present, or
     // downloaded from Adobe on the first install.
     checks.push(Check { name: "accc", ok: true, required: false,

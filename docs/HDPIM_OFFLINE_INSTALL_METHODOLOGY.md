@@ -11,8 +11,9 @@ inside the app on first launch.
    shared components it depends on.
 2. **Download.** Every package comes from Adobe's CDN. Each 2 MiB segment is checked against the hashes
    Adobe publishes for it.
-3. **Prepare the prefix.** Windows version information, the Visual C++ runtimes and the core fonts
-   (via winetricks).
+3. **Prepare the prefix.** Windows version information, then the Visual C++ runtimes, UCRT, GDI+ and
+   core fonts (`neutron prefix provision --microsoft-only`, which downloads them from Microsoft and
+   checks them against pinned checksums).
 4. **Seed Adobe's installer runtime.** Mud Hut extracts Adobe's Desktop Common components, which include
    the installer library `HDPIM.dll`, from Adobe's public Creative Cloud package (ACCCx), using
    `tools/extract_accc_runtime.py`.

@@ -199,7 +199,7 @@ pub fn install(
 
     // ⛔ FIRST, before touching the prefix at all. This check used to live in
     // run_hdpim, which is after prefix setup -- so a second install into a busy
-    // prefix got as far as winetricks, whose internal `wineserver -w` then blocked
+    // prefix got as far as the VC++ step, whose `wineserver -w` then blocked
     // on the first install's processes and looked like "hanging on vcrun2022".
     // Refusing here names the other install instead of deadlocking behind it.
     clear_orphan_hosts(em, prefix)?;
@@ -268,7 +268,7 @@ fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
     // Another mudhut install already working on this prefix? Refuse before we
     // touch anything. An hdpim_host only exists during the decrypt, so keying on
     // that alone misses a rival that is still in prereqs -- which is exactly when
-    // the collision bites, because winetricks' internal `wineserver -w` then
+    // the collision bites, because the VC++ step's `wineserver -w` then
     // blocks on the other install's wine processes and reports itself as a hung
     // "vcrun2022" step.
     //
@@ -295,7 +295,7 @@ fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
             if cmd.contains("install") && cmd.contains(&want) {
                 bail!(
                     "another Mud Hut install (pid {pid}) is already working on this prefix.\n\
-                     Two installs into one prefix deadlock each other — winetricks waits for \
+                     Two installs into one prefix deadlock each other — each waits for \
                      every process in the prefix to exit, and the other install's will not.\n\
                      Wait for it to finish, or stop it with: kill {pid}"
                 );
@@ -427,7 +427,7 @@ fn find_named(root: &Path, name: &std::ffi::OsStr, max_depth: u32) -> Option<Pat
     None
 }
 
-/// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + VC++ redists.
+/// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + Microsoft's components.
 fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     // Init: suppress the interactive Mono/Gecko installer dialog (it blocks headless).
     wine(cfg, prefix, &["wineboot", "--init"])
@@ -452,44 +452,17 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     let _ = wine(cfg, prefix, &["reg", "delete", r"HKCU\Software\Wine", "/v", "Version", "/f"])
         .status(); // ok if absent
 
-    // VC++ runtimes (Adobe's native C++ needs the real redists; wine builtins crash)
-    // and the real Microsoft core fonts.
+    // Microsoft's components BEFORE Adobe's installer, which looks for the VC++ runtimes: VC++ 2013
+    // and 2015-2022 (Adobe's native C++ needs the real redists; Wine's builtins crash), the UCRT,
+    // d3dcompiler_47, GDI+ and the Microsoft core fonts. `neutron prefix provision
+    // --microsoft-only` downloads them once from Microsoft, checks them against pinned checksums
+    // and runs Microsoft's own VC++ installers, so Mud Hut needs no winetricks.
     //
-    // corefonts is NOT cosmetic: CoolType picks the Roman default by PostScript
-    // name and throws on Wine's substitutes, so Premiere, After Effects and Media
-    // Encoder fail at STARTUP without genuine georgia/verdana/impact/trebuc/
-    // times/arial. `neutron prefix provision` only DETECTS this and prints
-    // "run `winetricks corefonts`" — nothing installed them, so an install that
-    // reported success produced a prefix whose video apps could not launch.
-    // Installing them here, where winetricks already runs and the user expects
-    // the slow part, is what makes "a working, launchable prefix" true.
-    if which("winetricks").is_none() {
-        bail!("winetricks is missing — install your distro's `winetricks` package. Mud Hut uses it \
-               to add the Visual C++ runtimes and the core fonts the Adobe apps need.");
-    }
-    {
-        em.progress("prereqs", 15, "winetricks vcrun2022 + vcrun2013 + corefonts");
-        let mut c = Command::new("winetricks");
-        c.args(["-q", "-f", "vcrun2022", "vcrun2013", "corefonts"])
-            .env("WINE", &cfg.wine)
-            .env("WINEPREFIX", prefix)
-            .env("WINEDEBUG", "-all")
-            .env("W_OPT_UNATTENDED", "1");
-        // ⛔ BOUNDED. winetricks runs `wineserver -w` internally, which waits for
-        // EVERY process in the prefix to exit -- so anything else live in it hangs
-        // winetricks forever, and the install reports "vcrun2022" while actually
-        // being blocked on someone else's wine process. Measured: winetricks in
-        // do_wait on a wineserver in fcntl_setlk, held by a second install's
-        // hdpim_host. It is best-effort by design, so time it out and continue.
-        match run_bounded(&mut c, Duration::from_secs(900)) {
-            Ok(true) => {}
-            Ok(false) => em.note(
-                "winetricks did not finish in time and was stopped — VC++ redists or core \
-                 fonts may be missing. Check nothing else is running in this prefix.",
-            ),
-            Err(e) => em.note(&format!("winetricks could not run: {e}")),
-        }
-    }
+    // corefonts is NOT cosmetic: CoolType picks the Roman default by PostScript name and throws
+    // on Wine's substitutes, so Premiere, After Effects and Media Encoder fail at STARTUP without
+    // genuine georgia/verdana/impact/trebuc/times/arial.
+    em.progress("prereqs", 15, "Microsoft VC++ runtimes, UCRT, GDI+ and core fonts");
+    microsoft_components(cfg, prefix)?;
     // Flush the registry cleanly — but BOUNDED.
     //
     // `wineserver -w` waits for EVERY process in the prefix to exit, and an app the
@@ -747,20 +720,49 @@ fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
 /// Run `cmd` to completion or kill it after `limit`. Ok(true) = it exited on its
 /// own, Ok(false) = it was stopped. For steps that are best-effort and must never
 /// be able to hang the install.
-fn run_bounded(cmd: &mut Command, limit: Duration) -> std::io::Result<bool> {
-    let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-    let deadline = Instant::now() + limit;
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(true);
+/// `neutron prefix provision --microsoft-only <prefix>` with Mud Hut's wine, bounded. Fails the
+/// install with the CLI's own reason when a component could not be downloaded or installed.
+fn microsoft_components(cfg: &Config, prefix: &Path) -> Result<()> {
+    let mut child = Command::new("neutron")
+        .args(["--json", "prefix", "provision", "--microsoft-only"])
+        .arg(prefix)
+        .env("NEUTRON_WINE", &cfg.wine)
+        .env("WINEDEBUG", "-all")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("could not run `neutron` (is Neutron set up? run `neutron setup`)")?;
+    // ⛔ BOUNDED: Microsoft's installers wait on the prefix's wineserver, and anything else live
+    // in the prefix can hold that forever. The JSON result is a few KB, well inside a pipe buffer.
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(false);
+            bail!("installing the Microsoft components did not finish in 15 minutes. Check that \
+                   nothing else is running in this prefix, then try again.");
         }
         std::thread::sleep(Duration::from_millis(250));
+    };
+    let mut out = String::new();
+    if let Some(mut so) = child.stdout.take() {
+        use std::io::Read;
+        let _ = so.read_to_string(&mut out);
     }
+    if status.success() {
+        return Ok(());
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(&out).ok()
+        .and_then(|v| v["steps"].as_array().cloned())
+        .and_then(|steps| steps.iter()
+            .find(|st| st["ok"] == serde_json::Value::Bool(false))
+            .map(|st| st["detail"].as_str().unwrap_or("").to_string()))
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| format!("`neutron prefix provision --microsoft-only` exited with {status}"));
+    bail!("could not install the Microsoft components: {detail}")
 }
 
 fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Emitter) {
@@ -801,12 +803,6 @@ fn wineserver(cfg: &Config, prefix: &Path, flag: &str) -> std::io::Result<std::p
     let ws = cfg.wine.with_file_name("wineserver");
     let ws = if ws.is_file() { ws } else { cfg.wine.with_file_name("server").join("wineserver") };
     Command::new(ws).arg(flag).env("WINEPREFIX", prefix).status()
-}
-
-fn which(bin: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|d| d.join(bin)).find(|p| p.is_file())
-    })
 }
 
 /// Map an absolute Linux path to a Wine `Z:` Windows path.
