@@ -13,3 +13,6 @@ __pycache__/
 /tools/adobe_device_auth.py
 /tools/verify_authenticode.py
 /ROADMAP.md
+
+# Release output (release.sh)
+/dist/

@@ -263,12 +263,32 @@ pub(crate) fn repo_tools_dir() -> Result<PathBuf> {
             }
             // Cargo dev-tree: target/{debug,release}/mudhut -> <repo>/tools.
             let dev = dir.join("../../tools");
-            if dev.is_dir() {
+            if dev.join("hdpim_host.exe").is_file() {
                 return Ok(dev.canonicalize().unwrap_or(dev));
             }
         }
     }
-    Ok(PathBuf::from("tools"))
+    embedded_tools_dir()
+}
+
+/// The two runtime tools, compiled into the binary so a release is one file (what
+/// `neutron setup` downloads). Written out on first use; rewritten when they differ from the
+/// copy this binary carries.
+const EMBEDDED_TOOLS: &[(&str, &[u8])] = &[
+    ("hdpim_host.exe", include_bytes!("../tools/hdpim_host.exe")),
+    ("extract_accc_runtime.py", include_bytes!("../tools/extract_accc_runtime.py")),
+];
+
+fn embedded_tools_dir() -> Result<PathBuf> {
+    let dir = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("neutron/mudhut-tools");
+    fs::create_dir_all(&dir)?;
+    for (name, bytes) in EMBEDDED_TOOLS {
+        let p = dir.join(name);
+        if fs::read(&p).ok().as_deref() != Some(*bytes) {
+            fs::write(&p, bytes)?;
+        }
+    }
+    Ok(dir)
 }
 
 /// Adobe's public Creative Cloud package (ACCCx) that seeds HDBox/HDPIM into a prefix. Without
