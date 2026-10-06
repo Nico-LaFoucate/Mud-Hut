@@ -24,6 +24,7 @@
     "illustrator":  { "sap": "ILST", "name": "Illustrator",       "version": "29.0",  "family": "Illustrator" },
     "animate":      { "sap": "FLPR", "name": "Animate",           "version": "24.0",  "family": "Animate" },
     "lightroom":    { "sap": "LTRM", "name": "Lightroom Classic", "version": "14.0",  "family": "Lightroom Classic" },
-    "mediaencoder": { "sap": "AME",  "name": "Media Encoder",     "version": "25.0",  "family": "Media Encoder" }
+    "mediaencoder": { "sap": "AME",  "name": "Media Encoder",     "version": "25.0",  "family": "Media Encoder" },
+    "lightroomcc":  { "sap": "LRCC", "name": "Lightroom (experimental)", "version": "9.0", "family": "Lightroom" }
   }
 }

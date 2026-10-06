@@ -60,6 +60,10 @@ pub fn apps() -> Vec<App> {
               exe: "Lightroom.exe", categories: "Graphics;Photography;", mime: &[] },
         App { id: "mediaencoder", name: "Media Encoder",     sap: "AME",  dir_prefix: "Adobe Media Encoder",
               exe: "Adobe Media Encoder.exe", categories: "AudioVideo;Video;AudioVideoEditing;", mime: &[] },
+        // EXPERIMENTAL: Lightroom (the cloud app) is planned, not supported yet. Listed so people
+        // can try it; the engine has a matching `lightroomcc` launch profile.
+        App { id: "lightroomcc",  name: "Lightroom (experimental)", sap: "LRCC", dir_prefix: "Adobe Lightroom CC",
+              exe: "lightroom.exe", categories: "Graphics;Photography;", mime: &[] },
     ]
 }
 
