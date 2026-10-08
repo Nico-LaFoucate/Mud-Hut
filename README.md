@@ -37,7 +37,7 @@ mudhut install <app>  --method windows  --source <C:> --prefix <dir> [--dry-run]
 mudhut install --suite --method windows --source <C:> --prefix <dir>
 
 mudhut download <app> [--dest DIR] [--core-only]   # just fetch+verify packages
-mudhut auth begin | poll                            # one-time Adobe sign-in (device/QR)
+mudhut accc                                         # fetch+verify Adobe's Creative Cloud package (ACCCx) now
 mudhut ledger                                       # show the resolved Adobe endpoints/apps
 ```
 
@@ -63,8 +63,9 @@ mudhut ledger                                       # show the resolved Adobe en
 5. `neutron prefix provision` the prefix — which also writes the menu launcher, icon and
    file associations (`neutron-<app>-<prefix>.desktop`; Mud Hut writes none of its own).
 
-The installed app is genuine and unmodified; **licensing is a separate one-time
-Adobe sign-in** (the app validates against your account via Adobe NGL). See
+The installed app is genuine and unmodified. **You sign in inside the Adobe app, the same as
+on Windows** (the app validates against your account via Adobe NGL); Mud Hut never touches your
+Adobe account or login. See
 [`docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md`](docs/HDPIM_OFFLINE_INSTALL_METHODOLOGY.md) for how it works.
 
 ### How `--method offline` works
@@ -83,26 +84,28 @@ parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
 
 > #### Installing from an ISO
 >
-> Mount it and point `--source` at the mount — that is all:
+> Point `--source` at the `.iso` file itself — that is all:
 >
 > ```sh
-> udisksctl loop-setup -r -f ~/Downloads/photoshop.iso     # or mount it in your file manager
-> mudhut install photoshop --method offline --source /run/media/$USER/<label>/products --prefix ~/ps
+> mudhut install photoshop --method offline --source ~/Downloads/photoshop.iso --prefix ~/ps
 > ```
+>
+> Mud Hut mounts the image read-only with `udisksctl` (udisks2; no root needed), installs
+> straight from it and unmounts it afterwards. An ISO you mounted yourself works too: point
+> `--source` at the mount.
 >
 > The source does **not** need to be writable and nothing is copied. Mud Hut detects
 > read-only media and writes its driver XML to a scratch dir, naming the payload
 > dirs by absolute path. ✅ Verified against real HDPIM installs (2026-09-03), both
 > auto-detected and forced via `MUDHUT_ESD_ABSOLUTE=1`.
->
-> Passing the `.iso` file itself is not supported — mount it first. (Auto-mounting
-> would only save you the one command, at the cost of a udisks/fuse dependency.)
 
-Requires the [Neutron](https://github.com/Nico-LaFoucate/neutron) runtime on `PATH`
-(`neutron runtime install`). The install engine finds Wine via the Neutron runtime
+Requires [Neutron](https://github.com/Nico-LaFoucate/neutron) and its runtime
+(`neutron setup` installs both). The install engine finds Wine via the Neutron runtime
 or `$MUDHUT_WINE`.
 
 ## Installing
+
+`neutron setup` installs Mud Hut for you. To build and install it from source instead:
 
 ```sh
 ./install.sh            # build --release + install + put `mudhut` on PATH
@@ -137,10 +140,22 @@ Everywhere Adobe accepts it, Mud Hut identifies itself honestly as `MudHut/<vers
 exception is Adobe's download CDN: it only serves app packages to Adobe's own installer, so
 package downloads use the User-Agent `Adobe Application Manager 2.0`.
 
+## Status
+
+Beta, like the rest of Neutron. See [Neutron's README](https://github.com/Nico-LaFoucate/neutron)
+for what has been tested.
+
+## Reporting bugs
+
+Bugs in any Neutron piece, including Mud Hut, go to
+[Neutron's Issues](https://github.com/Nico-LaFoucate/Neutron/issues/new/choose). Questions go to
+[Discussions](https://github.com/Nico-LaFoucate/Neutron/discussions). Report security problems
+privately: see [`SECURITY.md`](SECURITY.md). To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Mud Hut contains no
-Adobe code or assets.
+Mud Hut is licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
+[`LICENSE`](LICENSE) for the full text. Mud Hut contains no Adobe code or assets.
 
 ## Disclaimer
 
