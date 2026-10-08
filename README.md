@@ -147,8 +147,11 @@ for what has been tested.
 
 ## Reporting bugs
 
-Bugs in any Neutron piece, including Mud Hut, go to
-[Neutron's Issues](https://github.com/Nico-LaFoucate/Neutron/issues/new/choose). Questions go to
+Report problems with installing an app on this repository's
+[Issues](https://github.com/Nico-LaFoucate/Mud-Hut/issues/new/choose). If an Adobe app misbehaves
+while running, report it on
+[Neutron's Issues](https://github.com/Nico-LaFoucate/Neutron/issues/new/choose) instead: that is
+where launching and running the apps are handled. Questions go to
 [Discussions](https://github.com/Nico-LaFoucate/Neutron/discussions). Report security problems
 privately: see [`SECURITY.md`](SECURITY.md). To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

@@ -1,0 +1,61 @@
+name: Bug report
+description: Installing an Adobe app with Mud Hut doesn't work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. This form is for problems while installing an app with Mud Hut, from the command line or from Collider's Mud Hut tab.
+        If an installed app misbehaves while running, report it on [Neutron's Issues](https://github.com/Nico-LaFoucate/Neutron/issues/new/choose) instead. Please report one bug per issue.
+  - type: dropdown
+    id: app
+    attributes:
+      label: App being installed
+      options:
+        - Photoshop
+        - Premiere Pro
+        - After Effects
+        - Illustrator
+        - Animate
+        - Lightroom Classic
+        - Media Encoder
+        - Lightroom (experimental)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: method
+    attributes:
+      label: Install method
+      options:
+        - Download from Adobe (--method download)
+        - Offline package or disc image (--method offline)
+        - Copy from a Windows install (--method windows)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: mudhut-version
+    attributes:
+      label: mudhut --version
+      description: Run `mudhut --version` and paste what it prints. `neutron --version` prints it too.
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error text or log
+      description: Paste the error Mud Hut showed. When an install fails, the error names HDPIM's log in `~/.cache/mudhut/logs/`; drag that file in here.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution, desktop and GPU
+      placeholder: e.g. CachyOS, KDE Plasma on Wayland, NVIDIA RTX 3080
