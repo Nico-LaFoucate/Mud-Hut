@@ -383,40 +383,41 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
 
     if !(zip.is_file() && md5_of(&zip)? == ACCC_MD5) {
         em.progress("accc", 1, &format!("downloading Adobe's Creative Cloud package {ACCC_VERSION}"));
-        let resp = ureq::builder()
+        let tmp = zip.with_extension("zip.part");
+        let agent = ureq::builder()
             .timeout_connect(Duration::from_secs(30))
             .timeout_read(Duration::from_secs(120))
-            .build()
-            .get(ACCC_URL)
-            .call()
-            .map_err(|e| anyhow::anyhow!(
-                "could not download Adobe's Creative Cloud package ({e}).\n\
-                 If Adobe has removed version {ACCC_VERSION}, download the Creative Cloud desktop \
-                 app's direct-link zip from Adobe and point MUDHUT_ACCC_PACKAGES at its \
-                 extracted packages/ folder."))?;
-        let total: u64 = resp.header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let tmp = zip.with_extension("zip.part");
-        let mut out = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        let mut rd = resp.into_reader();
-        let mut buf = vec![0u8; 1 << 20];
-        let (mut done, mut last) = (0u64, 0u8);
-        loop {
-            let n = rd.read(&mut buf).context("downloading the Creative Cloud package")?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n])?;
-            done += n as u64;
-            if total > 0 {
-                let pct = (done * 100 / total) as u8;
-                if pct >= last + 5 {
-                    last = pct;
-                    em.progress("accc", pct, &format!("Creative Cloud package {}%", pct));
+            .build();
+        crate::net::retry("Creative Cloud package", |m| em.note(m), || {
+            let resp = agent.get(ACCC_URL).call().with_context(|| format!("GET {ACCC_URL}"))?;
+            let total: u64 = resp.header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut out = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+            let mut rd = resp.into_reader();
+            let mut buf = vec![0u8; 1 << 20];
+            let (mut done, mut last) = (0u64, 0u8);
+            loop {
+                let n = rd.read(&mut buf).context("downloading the Creative Cloud package")?;
+                if n == 0 {
+                    break;
+                }
+                out.write_all(&buf[..n])?;
+                done += n as u64;
+                if total > 0 {
+                    let pct = (done * 100 / total) as u8;
+                    if pct >= last + 5 {
+                        last = pct;
+                        em.progress("accc", pct, &format!("Creative Cloud package {}%", pct));
+                    }
                 }
             }
-        }
-        out.flush()?;
-        drop(out);
+            out.flush()?;
+            Ok(())
+        })
+        .map_err(|e| anyhow::anyhow!(
+            "could not download Adobe's Creative Cloud package ({e:#}).\n\
+             If Adobe has removed version {ACCC_VERSION}, download the Creative Cloud desktop \
+             app's direct-link zip from Adobe and point MUDHUT_ACCC_PACKAGES at its \
+             extracted packages/ folder."))?;
         let got = md5_of(&tmp)?;
         if got != ACCC_MD5 {
             let _ = fs::remove_file(&tmp);
@@ -500,18 +501,24 @@ pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Pat
             None
         } else {
             Some(
-                fetch_validation(&agent, &ledger.honest_headers(), &p.validation_url)
-                    .with_context(|| format!("fetching validation for {}", p.name))?,
+                crate::net::retry(&p.name, |m| em.note(m), || {
+                    fetch_validation(&agent, &ledger.honest_headers(), &p.validation_url)
+                })
+                .with_context(|| format!("fetching validation for {}", p.name))?,
             )
         };
 
         let url = format!("{cdn}{}", p.path);
-        let res = download_one(
-            // Adobe's CDN serves packages only to its own installer's User-Agent (tested
-            // 2026-10-05: "MudHut/0.2" -> 403), so package downloads keep the ledger's.
-            em, &agent, &url, &ledger.headers, &out, validation.as_ref(),
-            &mut done, total, &mut last_pct,
-        );
+        let start = done;
+        let res = crate::net::retry(&p.name, |m| em.note(m), || {
+            done = start; // a retry restarts the package (segments are hashed in order)
+            download_one(
+                // Adobe's CDN serves packages only to its own installer's User-Agent (tested
+                // 2026-10-05: "MudHut/0.2" -> 403), so package downloads keep the ledger's.
+                em, &agent, &url, &ledger.headers, &out, validation.as_ref(),
+                &mut done, total, &mut last_pct,
+            )
+        });
         if let Err(e) = res {
             let _ = fs::remove_file(out.with_extension("part"));
             let _ = fs::remove_file(&out);
@@ -566,6 +573,7 @@ fn fetch_validation(
     };
     let xml = match get_text(agent, headers, &type2) {
         Ok(x) => x,
+        Err(e) if crate::net::transient(&e) => return Err(e),
         Err(_) => get_text(agent, headers, base_url)
             .with_context(|| format!("GET {base_url} (validation)"))?,
     };

@@ -20,6 +20,7 @@ mod hdpim;
 mod install;
 mod ledger;
 mod iso;
+mod net;
 mod offline;
 mod output;
 mod source;

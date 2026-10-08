@@ -508,10 +508,12 @@ fn http_get_text(
     }
     // NB: ureq's `into_string()` caps at 10 MiB; the product feed is larger, so
     // read the raw reader with no cap.
-    let resp = req.call().with_context(|| format!("GET {url}"))?;
-    let mut body = String::new();
-    resp.into_reader()
-        .read_to_string(&mut body)
-        .context("reading response body")?;
-    Ok(body)
+    crate::net::retry(url, |m| eprintln!("  {m}"), || {
+        let resp = req.clone().call().with_context(|| format!("GET {url}"))?;
+        let mut body = String::new();
+        resp.into_reader()
+            .read_to_string(&mut body)
+            .context("reading response body")?;
+        Ok(body)
+    })
 }
