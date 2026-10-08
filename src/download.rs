@@ -571,11 +571,16 @@ fn fetch_validation(
     } else {
         format!("{base_url}?algorithm=TYPE2")
     };
+    // Either answer verifies the download. When TYPE2 fails for any reason, try the base URL
+    // at once (a different file, possibly already cached); only when both fail is the error
+    // returned, the transient one if there was one, so the caller retries.
     let xml = match get_text(agent, headers, &type2) {
         Ok(x) => x,
-        Err(e) if crate::net::transient(&e) => return Err(e),
-        Err(_) => get_text(agent, headers, base_url)
-            .with_context(|| format!("GET {base_url} (validation)"))?,
+        Err(e2) => match get_text(agent, headers, base_url) {
+            Ok(x) => x,
+            Err(e1) if crate::net::transient(&e2) && !crate::net::transient(&e1) => return Err(e2),
+            Err(e1) => return Err(e1.context(format!("GET {base_url} (validation)"))),
+        },
     };
     let doc = roxmltree::Document::parse(&xml).context("parsing validation XML")?;
 

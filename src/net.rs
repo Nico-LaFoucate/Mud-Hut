@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Retries for Adobe's servers. One transient answer must not end a multi-gigabyte install: on
 //! 2026-10-07 a release test lost a Photoshop install to a single HTTP 503 on a 411-byte
-//! validation file that answered 200 a minute later.
+//! validation file that answered 200 a minute later. The validation service sits behind
+//! CloudFront; a file not yet in its cache goes to Adobe's origin, which can answer 503 for more
+//! than 30 s (the second run outlasted 5 tries over 30 s). Once cached, it answers at once.
 
 use std::io::ErrorKind;
 use std::time::Duration;
 
 use anyhow::Result;
 
-/// Tries per request, waiting 2, 4, 8, then 16 seconds between them.
-pub const ATTEMPTS: u32 = 5;
+/// Tries per request: waits of 2, 4, 8, 16, 32, 60 and 60 seconds, about 3 minutes in all.
+pub const ATTEMPTS: u32 = 8;
+const MAX_WAIT: u64 = 60;
 
 /// Worth another try: server hiccups (408, 429, 5xx gateway/unavailable) and network failures,
 /// including a connection that drops mid-download. A 4xx is Adobe's answer, and a local failure
@@ -39,7 +42,7 @@ pub fn retry<T>(what: &str, mut note: impl FnMut(&str), mut f: impl FnMut() -> R
             Err(e) if attempt < ATTEMPTS && transient(&e) => {
                 note(&format!("{what}: {e:#}; trying again in {wait} s ({attempt}/{ATTEMPTS})"));
                 std::thread::sleep(Duration::from_secs(wait));
-                wait *= 2;
+                wait = (wait * 2).min(MAX_WAIT);
                 attempt += 1;
             }
             r => return r,
