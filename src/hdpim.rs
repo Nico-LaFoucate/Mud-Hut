@@ -560,9 +560,14 @@ fn run_hdpim(
     let exe = loop {
         if let Some(status) = child.try_wait().context("polling hdpim_host")? {
             // Host exited on its own — the install must have produced the exe.
-            break find_installed_exe(prefix, cat).with_context(|| {
-                format!("hdpim_host exited ({status}) but no installed {} exe found", cat.name)
-            })?;
+            match find_installed_exe(prefix, cat) {
+                Some(exe) => break exe,
+                None => bail!(
+                    "hdpim_host exited ({status}) but no installed {} exe found.{}",
+                    cat.name,
+                    kept_log(&host_log_path)
+                ),
+            }
         }
         // ⛔ DO NOT stop just because the main executable exists.
         //
@@ -593,7 +598,7 @@ fn run_hdpim(
                 .collect();
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_file(&host_log_path);
+            let kept = kept_log(&host_log_path);
             let already = find_installed_exe(prefix, cat).is_some();
             let hint = if already {
                 format!(
@@ -606,7 +611,7 @@ fn run_hdpim(
             } else {
                 String::new()
             };
-            bail!("HDPIM refused the install (workflow error {code}).{hint}");
+            bail!("HDPIM refused the install (workflow error {code}).{hint}{kept}");
         }
 
         if log.contains("tasks completed.") {
@@ -623,10 +628,10 @@ fn run_hdpim(
             let _ = child.kill();
             let _ = child.wait();
             let tail: Vec<&str> = log.lines().rev().take(5).collect();
-            let _ = std::fs::remove_file(&host_log_path);
             bail!(
-                "HDPIM install timed out after 2400s without reporting completion.\nLast lines:\n{}",
-                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                "HDPIM install timed out after 2400s without reporting completion.\nLast lines:\n{}{}",
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n"),
+                kept_log(&host_log_path)
             );
         }
         // Report progress DURING the decrypt. Without this the CLI emitted nothing
@@ -659,6 +664,33 @@ fn run_hdpim(
     };
     let _ = wineserver(cfg, prefix, "-k");
     Ok(exe)
+}
+
+/// On a failed install, keep HDPIM's log (it names the component and the reason) under
+/// `$XDG_CACHE_HOME/mudhut/logs/` and return a message with its path and its error lines.
+/// The log used to be deleted on every failure, so "workflow error 182" arrived with no way
+/// to see which package HDPIM was missing.
+fn kept_log(host_log: &Path) -> String {
+    let log = std::fs::read_to_string(host_log).unwrap_or_default();
+    let errors: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("rror") || l.contains("not present") || l.contains("failed"))
+        .collect();
+    let shown = errors[errors.len().saturating_sub(8)..].join("\n");
+    let dir = crate::download::xdg_dir("XDG_CACHE_HOME", ".cache").map(|d| d.join("mudhut/logs"));
+    let kept = dir.ok().and_then(|d| {
+        std::fs::create_dir_all(&d).ok()?;
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|t| t.as_secs())
+            .unwrap_or(0);
+        let dest = d.join(format!("hdpim-{secs}.log"));
+        std::fs::copy(host_log, &dest).ok()?;
+        let _ = std::fs::remove_file(host_log);
+        Some(dest)
+    });
+    let at = kept.as_deref().unwrap_or(host_log);
+    format!("\nHDPIM's log: {}\n{}", at.display(), shown)
 }
 
 /// The install succeeded only if the app exe is a real decrypted PE (not the ~1 MB

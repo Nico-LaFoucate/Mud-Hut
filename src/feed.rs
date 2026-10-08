@@ -280,7 +280,7 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
     let mut packages = Vec::new();
     let mut total_bytes = 0u64;
     for p in &manifest.packages.package {
-        if !condition_matches(&p.condition, language, &build.platform) {
+        if !condition_matches(&p.condition, language) {
             continue;
         }
         total_bytes += p.download_size;
@@ -438,14 +438,21 @@ fn print_plan_human(plan: &DownloadPlan) {
 ///
 /// Anything not understood still returns true, so an unrecognised condition can
 /// never silently drop a package we would previously have installed.
-fn condition_matches(cond: &str, lang: &str, platform: &str) -> bool {
+///
+/// ⛔ `[OSProcessorFamily]` is the MACHINE's, never the build's. Every Neutron prefix is
+/// 64-bit Windows, and HDPIM evaluates the conditions against it. This used to take
+/// "64-bit" from the build's platform, and Adobe labels most add-ons `win32`, so for
+/// Camera Raw, CCXP and Libraries we downloaded the 32-bit packages while HDPIM
+/// wanted the 64-bit ones: the release test of 2026-10-07 died with "workflow error
+/// 182" after downloading everything, and Camera Raw's x64 plug-in was never fetched.
+fn condition_matches(cond: &str, lang: &str) -> bool {
     if cond.is_empty() {
         return true;
     }
-    // We spoof Windows 11 24H2 (see hdpim::setup_prefix), so 10.0 is the version
-    // an installer sees. win64 unless the build says otherwise.
+    // We spoof Windows 11 24H2 on x64 (see hdpim::setup_prefix): an installer sees
+    // OS version 10.0 and a 64-bit processor family.
     let os_version: f64 = 10.0;
-    let is_64 = !platform.eq_ignore_ascii_case("win32");
+    let is_64 = true;
 
     cond.split("&&").all(|clause| {
         let c = clause.trim();
@@ -516,4 +523,21 @@ fn http_get_text(
             .context("reading response body")?;
         Ok(body)
     })
+}
+
+#[cfg(test)]
+mod condition_tests {
+    use super::condition_matches;
+
+    #[test]
+    fn processor_family_is_the_machines_64_bit() {
+        // CCXP's real conditions (manifest 7.14.0.3): a win32-labeled add-on still installs
+        // its 64-bit packages on 64-bit Windows.
+        assert!(condition_matches("[OSProcessorFamily]==64-bit", "en_US"));
+        assert!(condition_matches("[OSProcessorFamily]==64-bit&&[OSVersion]>=10.0", "en_US"));
+        assert!(!condition_matches("[OSProcessorFamily]==64-bit&&[OSVersion]<=6.3", "en_US"));
+        assert!(!condition_matches("[OSProcessorFamily]==32-bit", "en_US"));
+        assert!(condition_matches("[installLanguage]==en_US", "en_US"));
+        assert!(!condition_matches("[installLanguage]==de_DE", "en_US"));
+    }
 }

@@ -298,7 +298,7 @@ const ACCC_VERSION: &str = "6.5.0.348";
 const ACCC_URL: &str = "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.5.0/348/win64/ACCCx6_5_0_348.zip";
 const ACCC_MD5: &str = "33a015138f2938690267a54e3a21f63e";
 
-fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
+pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     std::env::var_os(var)
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))

@@ -121,10 +121,11 @@ pub fn install(
     //
     // ⛔ `Application.json` alone is NOT sufficient evidence. A staged package
     // carries manifests for components whose payloads were deliberately never
-    // fetched, and keying off the manifest re-admits exactly those: CCXP needs a
-    // macOS-only `CCXProcess-LaunchAgent.zip` ("not present in ESD Mode", error
-    // 182) and can NEVER be completed on Windows; ACR ships delta zips that were
-    // not downloaded. The proven Driver_core.xml omits both. Keying off the
+    // fetched, and keying off the manifest re-admits exactly those: ACR ships delta
+    // zips that were not downloaded. (CCXP's `CCXProcess-LaunchAgent.zip` is NOT
+    // macOS-only: its condition is `[OSProcessorFamily]==64-bit`. Error 182, "not
+    // present in ESD Mode", came from planning win32-labeled add-ons as a 32-bit
+    // machine; see feed::condition_matches.) The proven Driver_core.xml omits both. Keying off the
     // manifest made the install die on a completeness check for files that are
     // not supposed to exist.
     let mut skipped: Vec<String> = Vec::new();
