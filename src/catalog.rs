@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The Adobe app catalog: the set of apps Mud Hut knows how to install.
 //!
-//! P1 keeps this compiled-in. The plan (per mud_hut_suggestions.md) is to later
-//! source it from a remote versioned JSON ledger so SAP codes / directory names
-//! can be hotfixed without a rebuild — `apps()` is the single seam that would
-//! swap to a ledger fetch.
+//! Compiled in. `apps()` is the single seam a remote ledger fetch would replace,
+//! if SAP codes / directory names ever need fixing without a rebuild.
 
 use std::path::Path;
 
@@ -20,7 +18,7 @@ pub struct App {
     pub id: &'static str,
     /// Human name.
     pub name: &'static str,
-    /// Adobe's internal 4-letter SAP tracking code (used by the P3 downloader).
+    /// Adobe's 4-letter SAP code (the product feed and the package layout key on it).
     pub sap: &'static str,
     /// Prefix of the app's directory under `Program Files/Adobe/` — matched as a
     /// glob-ish prefix so a version bump (2024 vs 2025) still resolves.

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `--method offline`: install from a pre-downloaded Adobe offline package.
 //!
-//! A package is Adobe's ESD products layout — exactly what `mudhut download
-//! <app> --dest <dir>` stages (and what a Set-up.exe offline bundle carries in
-//! its `products/` dir): `<dir>/<SAP>/Application.json` + the payload zips, for
-//! the product and each dependency component.
+//! A package is Adobe's ESD products layout — what `mudhut install <app> --method
+//! download --keep-download` leaves in its cache dir (and what a Set-up.exe offline
+//! bundle carries in its `products/` dir): `<dir>/<SAP>/Application.json` + the
+//! payload zips, for the product and each dependency component.
 //!
 //! Resolution is FULLY LOCAL: the manifests are read from the package, never
 //! the network. The install itself is the same HDPIM decrypt engine `download`

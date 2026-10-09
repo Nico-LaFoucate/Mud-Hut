@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Generate the HyperDrive `driver.xml` — the install descriptor Adobe's
-//! standalone `Setup.exe` consumes. Mirrors the adobe-packager layout: the target
+//! Generate the HyperDrive `driver.xml` — the install descriptor (DriverInfo) that
+//! HDPIM consumes. Mirrors the adobe-packager layout: the target
 //! product + its dependencies, each pointing at its per-SAP `EsdDirectory`
 //! (`<dest>/<SAP>/`), plus the requested install dir + language.
 

@@ -36,7 +36,7 @@ pub struct Config {
 /// Discover the engine's tools. `repo_tools` is the dir holding the shipped
 /// `hdpim_host.exe` + `extract_accc_runtime.py` (Mud Hut's `tools/`). Wine is taken
 /// from `$MUDHUT_WINE`, else the runtime the target `prefix` is stamped for, else whatever
-/// `neutron runtime which` reports, else the newest numeric Neutron runtime, else the dev tree.
+/// `neutron runtime which` reports, else the newest numeric Neutron runtime.
 ///
 /// Pass the target prefix whenever it is known: installing into an existing prefix with
 /// a mismatched wine wineboot-clobbers its patched natives.
@@ -61,7 +61,7 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>
 /// missing, older than that subcommand, or answers with a path that is not there.
 ///
 /// ⛔ Parsed without a JSON dependency: the field is a plain `"wine": "<path>"`. If that output
-/// shape ever changes this returns None and resolution falls through to the old behaviour, which
+/// shape ever changes this returns None and resolution falls through to the old behavior, which
 /// is the safe direction -- Mud Hut must never fail to install because a helper changed format.
 fn neutron_runtime_which() -> Option<PathBuf> {
     let out = Command::new("neutron").args(["--json", "runtime", "which"]).output().ok()?;
@@ -93,7 +93,6 @@ pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
     //    mtime of <wine>/share/wine/wine.inf differs from <prefix>/.update-timestamp,
     //    and setup_prefix() then runs `wineboot --init` unconditionally — so resolving
     //    any other build reinstalls system32 and reverts the prefix's patched natives.
-    //    Same rule as neutron's preserved-fixes/harnesses/runtime_for_prefix.sh.
     if let (Some(home), Some(prefix)) = (&home, prefix) {
         if let Some(p) = runtime_for_prefix(home, prefix) {
             return Some(p);
@@ -114,7 +113,7 @@ pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
     //    ⚠️ This used to be `cands.sort(); cands.pop()` — a lexicographic sort over full
     //    paths, which ranked "neutron-wine-11.10-perf-test" above "neutron-wine-11.10-45"
     //    because "p" > "4". On the dev box that selected a July build marked TEST ONLY,
-    //    NEVER SHIP (RUNTIMES.md) to run against a prefix stamped for 11.10-45.
+    //    NEVER SHIP to run against a prefix stamped for 11.10-45.
     //    Non-numeric suffixes (perf-test, gpufix, diag, overhang…) are experiment builds
     //    and are now excluded entirely rather than merely ranked.
     if let Some(home) = &home {
@@ -434,7 +433,7 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
         .env("WINEDLLOVERRIDES", "mscoree,mshtml=d;winemenubuilder.exe=d")
         .status_ok("wineboot --init")?;
 
-    // Win11 24H2 spoof (HDPIM gates on the OS version; see methodology §4).
+    // Win11 24H2 spoof (HDPIM gates on the OS version; see the methodology doc, step 3).
     let cv = r"HKLM\Software\Microsoft\Windows NT\CurrentVersion";
     let regs: &[(&str, &str, &str)] = &[
         ("CurrentBuild", "REG_SZ", "26100"),
@@ -729,9 +728,9 @@ fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
     c.env("WINEPREFIX", prefix)
         // ⛔ Kill winemenubuilder. Left enabled it mirrors the prefix's Start Menu
         // into ~/.local/share/applications/wine/Programs/, and those launchers run
-        // BARE `wine` from PATH -- distro wine, not the pinned Neutron runtime. That
-        // is the exact bug LAUNCHERS.md exists for: a menu launch then fires
-        // `wineboot -u` and reverts the prefix's patched natives. They also carry
+        // BARE `wine` from PATH -- distro wine, not the pinned Neutron runtime. A
+        // menu launch through one of them then fires `wineboot -u` and reverts the
+        // prefix's patched natives. They also carry
         // the same StartupWMClass as ours, so KDE cannot tell them apart and one can
         // silently take over a dock pin -- which is how a user's pinned Premiere 2025
         // became 2026 after installing the 2026 suite.

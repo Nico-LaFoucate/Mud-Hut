@@ -6,8 +6,9 @@
  * calls its exported install API exactly the way Adobe's Set-up.exe does.
  * No Adobe binary is modified; no decryption is reimplemented (HDPIM does it).
  *
- * Build (32-bit PE, HDPIM.dll is PE32):
- *   i686-w64-mingw32-gcc -O2 -municode -o hdpim_host.exe hdpim_host.c -lole32
+ * Build (32-bit PE, HDPIM.dll is PE32), from tools/ -- see BUILD_hdpim_host.md:
+ *   i686-w64-mingw32-windres host.rc -O coff -o host_res.o
+ *   i686-w64-mingw32-gcc -O2 -o hdpim_host.exe hdpim_host.c host_res.o -lole32
  *
  * Usage:
  *   hdpim_host.exe <HDPIM.dll path> <Driver.xml path> [wait_seconds]

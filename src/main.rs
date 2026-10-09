@@ -6,9 +6,9 @@
 //! provision`, which also writes the menu launchers). It never translates (that's
 //! Neutron's job) and never ships or patches Adobe binaries — orchestration only.
 //!
-//! Layering mirrors the ecosystem: Mud Hut (install+provision) -> Neutron
-//! (runtime) -> Collider (GUI). Collider drives this CLI exactly like it drives
-//! `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
+//! Layering: Collider (the GUI), Mud Hut and a terminal all sit above the `neutron`
+//! CLI, which provisions and launches prefixes on the neutron-wine runtime. Collider
+//! drives this CLI exactly like it drives `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
 //! last of which is the terminal `result`/`error`.
 
 mod catalog;

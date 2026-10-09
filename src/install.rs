@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The install pipeline: **acquire -> stage -> provision**.
 //!
-//! Every ingestion method (`windows`, `download`, `offline`) produces the same
-//! thing — an [`Acquisition`]: a base directory plus the set of source paths to
-//! copy into `<prefix>/drive_c/...`, preserving the Windows layout. This module
-//! owns the shared half — planning, staging (idempotent copy), and the handoff
-//! to `neutron prefix provision` — so the methods only differ in how they get
-//! the bits onto disk. Idempotent (files already present with the same size are
+//! The `windows` method produces an [`Acquisition`]: a base directory plus the set
+//! of source paths to copy into `<prefix>/drive_c/...`, preserving the Windows
+//! layout. This module owns planning, staging and the handoff to `neutron prefix
+//! provision`. Staging is idempotent (files already present with the same size are
 //! skipped) so a re-run repairs a partial install rather than corrupting it.
+//! `download` and `offline` run Adobe's installer engine instead
+//! (`download::hdpim_install_and_provision`) and share only [`provision`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,8 +20,7 @@ use walkdir::WalkDir;
 use crate::output::Emitter;
 
 /// The product of the `acquire` step: bits on disk, ready to stage into a prefix.
-/// Methods build this differently (copy discovery / download+unpack / extract)
-/// but the [`run`] pipeline treats them identically.
+/// Built by the `windows` method's copy discovery; consumed by [`run`].
 pub struct Acquisition {
     /// Directory the item paths are relative to; `item_srcs` map to
     /// `<prefix>/drive_c/<path relative to base>`.
@@ -60,8 +59,8 @@ struct InstallResult {
     provisioned: bool,
 }
 
-/// Stage an [`Acquisition`] into `prefix` and provision it. Shared by every
-/// ingestion method. Always removes the acquisition's scratch dir on the way
+/// Stage an [`Acquisition`] into `prefix` and provision it (the `windows`
+/// method). Always removes the acquisition's scratch dir on the way
 /// out (success or failure).
 pub fn run(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Result<()> {
     let scratch = acq.scratch.clone();

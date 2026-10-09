@@ -3,8 +3,8 @@
 //!
 //! The resolve half (feed -> buildGuid -> manifest -> [`DownloadPlan`]) lives in
 //! [`crate::feed`]. This module is the fetch half: download each planned package
-//! from the CDN into a destination tree (preserving Adobe's `Path` layout so the
-//! HyperDrive `Setup.exe` finds them), streaming to disk while verifying integrity.
+//! from the CDN into a destination tree (preserving Adobe's `Path` layout so
+//! HDPIM finds them), streaming to disk while verifying integrity.
 //!
 //! **Verification.** Adobe's `packageHashKey` is NOT the hash of the downloaded
 //! bytes (it's identical across the TYPE1/TYPE2 algorithms — a decrypted-content
@@ -12,9 +12,6 @@
 //! (`?algorithm=TYPE2`): a per-`segmentSize` (2 MiB) list of SHA-256 segment
 //! hashes. We verify each segment as it streams. Idempotent: a file already
 //! present at the expected size is trusted and skipped.
-//!
-//! Next: generate `driver.xml` + run the standalone HyperDrive installer, then the
-//! token->opm.db licensing handoff (Path 1).
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -32,11 +29,10 @@ use crate::ledger::Ledger;
 use crate::output::Emitter;
 
 /// `install --method download`: install a genuine app into `prefix` via the HDPIM
-/// offline engine (decrypt, no Set-up.exe/WAM/CC-desktop). `source` must point at a
-/// staged product package dir (holds `<SAP>/` payloads + its deps) — the auto-download
-/// of the full dependency set is the next increment (the products feed doesn't yet
-/// resolve the shared components). We resolve the product's DriverInfo from the feed,
-/// write it beside the packages, then run the engine and provision.
+/// offline engine (decrypt, no Set-up.exe/WAM/CC-desktop). Without `source`, downloads
+/// the product and its dependency components (resolved from the product feed) into the
+/// download cache; with `source`, uses the packages already staged there. Then writes
+/// the product's DriverInfo beside the packages, runs the engine and provisions.
 pub fn install(
     em: &Emitter,
     app: Option<&str>,
@@ -306,7 +302,7 @@ pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 /// The ACCCx `packages/` dir: `$MUDHUT_ACCC_PACKAGES`, else `accc-packages/` beside the binary
-/// (the tester bundle), else the copy downloaded from Adobe into
+/// (a bundled copy), else the copy downloaded from Adobe into
 /// `$XDG_DATA_HOME/neutron/accc/<version>/packages` (fetched + md5-verified on first use).
 ///
 /// ⛔ Never a dev-box scratch path: `$HOME/mudhut-parent-stage/packages` used to be the answer

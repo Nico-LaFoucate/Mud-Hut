@@ -9,8 +9,8 @@
 //!
 //! From those we compute a [`DownloadPlan`]: the subset of packages to fetch for a
 //! given install language (core packages + the chosen language's, skipping every
-//! other language). The actual chunk download + hash-verify + HyperDrive install
-//! build on this (roadmap 1.3 next increments); this module is the resolve half.
+//! other language). The chunk download + hash-verify (`crate::download`) and the
+//! HDPIM install (`crate::hdpim`) build on this; this module is the resolve half.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -54,7 +54,7 @@ pub struct Manifest {
     #[serde(rename = "Packages", default)]
     pub packages: Packages,
     /// Shared components the app also needs (ACR, CCXP, …). Shape varies; kept raw
-    /// so a schema tweak never breaks the parse. Resolved in a later increment.
+    /// so a schema tweak never breaks the parse. Read by [`plan`].
     #[serde(rename = "Dependencies", default)]
     pub dependencies: serde_json::Value,
 }
@@ -100,9 +100,9 @@ pub struct DownloadPlan {
     pub language: String,
     pub packages: Vec<PlannedPackage>,
     pub total_bytes: u64,
-    /// Shared components the app needs (from the manifest). Not yet downloadable —
-    /// components aren't in the products feed (resolution is an open item) — but
-    /// listed here + in the generated driver.xml.
+    /// Shared components the app needs (from the manifest), also listed in the
+    /// generated driver.xml. `install --method download` resolves them from the product
+    /// feed ([`resolve_dependencies`]) and downloads them; `mudhut download` does not.
     pub dependencies: Vec<Dependency>,
 }
 
@@ -436,7 +436,7 @@ fn print_plan_human(plan: &DownloadPlan) {
 ///   [OSProcessorFamily]==32-bit          [OSVersion]<=6.3
 ///   [installLanguage]==en_US
 ///
-/// Anything not understood still returns true, so an unrecognised condition can
+/// Anything not understood still returns true, so an unrecognized condition can
 /// never silently drop a package we would previously have installed.
 ///
 /// ⛔ `[OSProcessorFamily]` is the MACHINE's, never the build's. Every Neutron prefix is

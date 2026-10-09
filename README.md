@@ -4,9 +4,9 @@
 
 Mud Hut is a small, non-interactive CLI that automates deploying the Adobe
 Creative Suite onto Linux. It acquires the app (download it straight from Adobe,
-or copy an existing Windows install), sets up the prefix, and provisions it to be
-Neutron-ready (provision also writes the menu launchers, one per app per prefix) —
-so the experience is *"run it and it just works."*
+install from an offline package or `.iso`, or copy an existing Windows install), sets
+up the prefix, and provisions it to be Neutron-ready (provision also writes the menu
+launchers, one per app per prefix) — so the experience is *"run it and it just works."*
 
 It is an **orchestrator only**: it never translates applications (that is
 Neutron's job), and it **never ships, modifies or patches Adobe binaries, and never
@@ -14,9 +14,13 @@ bypasses licensing**. It drives Adobe's own installer library, and you sign in t
 own Adobe account inside the app.
 
 ```
-Mud Hut  (acquire + install + provision)
-   └── Neutron  (Wine-based runtime)
-          └── Collider  (GUI)
+Collider (GUI)    Mud Hut (acquire + install)    terminal
+       │                       │                     │
+       └───────────────────────┼─────────────────────┘
+                               ▼
+                neutron CLI (provision, launch)
+                               │
+                neutron-wine (the Wine runtime)
 ```
 
 Collider drives Mud Hut exactly as it drives Neutron: `mudhut --json <cmd>`
@@ -36,7 +40,7 @@ mudhut install <app> --method download --prefix <dir> [--dry-run]
 mudhut install <app>  --method windows  --source <C:> --prefix <dir> [--dry-run]
 mudhut install --suite --method windows --source <C:> --prefix <dir>
 
-mudhut download <app> [--dest DIR] [--core-only]   # just fetch+verify packages
+mudhut download <app> [--dest DIR] [--core-only]   # fetch+verify the app's own packages (not an offline package)
 mudhut accc                                         # fetch+verify Adobe's Creative Cloud package (ACCCx) now
 mudhut ledger                                       # show the resolved Adobe endpoints/apps
 ```
@@ -77,10 +81,13 @@ mudhut install photoshop --method offline --source ~/mudhut-pkgs/PHSP-27.8-win64
 ```
 
 `--source` is a directory in Adobe's ESD products layout — `<SAP>/Application.json`
-plus the payload zips, for the product and each dependency. That is exactly what
-`mudhut download <app> --dest <dir>` stages, and what a Set-up.exe offline bundle
-carries in its `products/` dir (point `--source` at either the products dir or its
-parent). Everything is resolved from the package: no feed, no CDN, no sign-in.
+plus the payload zips, for the product and each dependency. That is what
+`mudhut install <app> --method download --keep-download` leaves in
+`~/.cache/mudhut/<SAP>-<version>-<platform>/products`, and what a Set-up.exe offline
+bundle carries in its `products/` dir (point `--source` at either the products dir or
+its parent). `mudhut download --dest` is not enough: it fetches only the app's own
+packages, without the `Application.json` manifests or the shared components.
+Everything is resolved from the package: no feed, no CDN, no sign-in.
 
 > #### Installing from an ISO
 >

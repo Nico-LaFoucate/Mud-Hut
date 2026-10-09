@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The remote download ledger (roadmap 1.2).
+//! The remote download ledger.
 //!
 //! Adobe's endpoints, request headers, and per-app SAP code / version / platform
 //! live in a versioned JSON file published alongside the repo — NOT compiled into
