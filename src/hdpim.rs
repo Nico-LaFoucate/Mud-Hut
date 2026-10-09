@@ -193,7 +193,7 @@ pub fn install(
             cat.name,
             prefix.display()
         ));
-        return Ok(prefix.join("drive_c/Program Files/Adobe").join(format!("Adobe {} <year>", cat.name)));
+        return Ok(prefix.join("drive_c/Program Files/Adobe").join(format!("{} <year>", cat.dir_prefix)));
     }
 
     // ⛔ FIRST, before touching the prefix at all. This check used to live in
@@ -326,7 +326,10 @@ fn clear_orphan_hosts(em: &Emitter, prefix: &Path) -> Result<()> {
 
 fn find_installed_exe(prefix: &Path, cat: &crate::catalog::App) -> Option<PathBuf> {
     let adobe = prefix.join("drive_c/Program Files/Adobe");
-    let dir_prefix = format!("Adobe {}", cat.name);
+    // The catalog's folder name, never one built from the display name: "Lightroom
+    // (experimental)" installs to "Adobe Lightroom CC", so a name-built prefix made a
+    // finished install fail with "no installed exe was found" and skip provisioning.
+    let dir_prefix = cat.dir_prefix;
 
     // The catalog carries the exact executable, because it is NOT derivable from
     // the app name and is not always at the top level: After Effects ships
@@ -341,7 +344,7 @@ fn find_installed_exe(prefix: &Path, cat: &crate::catalog::App) -> Option<PathBu
         .filter(|d| {
             d.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with(&dir_prefix))
+                .map(|n| n.starts_with(dir_prefix))
                 .unwrap_or(false)
         })
         .collect();
@@ -386,7 +389,7 @@ fn dir_size_mb(prefix: &Path, cat: &crate::catalog::App) -> u64 {
         total
     }
     let adobe = prefix.join("drive_c/Program Files/Adobe");
-    let want = format!("Adobe {}", cat.name);
+    let want = cat.dir_prefix;
     let mut budget = 60_000u32;      // bounded: this runs every 10s during install
     std::fs::read_dir(&adobe)
         .into_iter()
@@ -394,7 +397,7 @@ fn dir_size_mb(prefix: &Path, cat: &crate::catalog::App) -> u64 {
         .flatten()
         .map(|e| e.path())
         .filter(|d| {
-            d.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(&want)).unwrap_or(false)
+            d.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with(want)).unwrap_or(false)
         })
         .map(|d| walk(&d, &mut budget))
         .sum::<u64>()
@@ -913,5 +916,22 @@ mod tests {
     #[test]
     fn z_path_maps_slashes() {
         assert_eq!(to_z_path(Path::new("/home/x/d.xml")), r"Z:\home\x\d.xml");
+    }
+
+    // Every catalog app's exe is found where Adobe puts it. Lightroom (experimental) is the
+    // case that broke: its folder is "Adobe Lightroom CC", not "Adobe " + its display name.
+    #[test]
+    fn finds_every_catalog_exe_in_its_own_folder() {
+        for cat in crate::catalog::apps() {
+            let prefix = std::env::temp_dir().join(format!("mudhut-exe-{}-{}", cat.id, std::process::id()));
+            let exe = prefix
+                .join("drive_c/Program Files/Adobe")
+                .join(format!("{} 2026", cat.dir_prefix))
+                .join(cat.exe);
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(&exe, b"MZ").unwrap();
+            assert_eq!(find_installed_exe(&prefix, &cat), Some(exe.clone()), "{}", cat.id);
+            let _ = std::fs::remove_dir_all(&prefix);
+        }
     }
 }
