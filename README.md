@@ -162,6 +162,13 @@ where launching and running the apps are handled. Questions go to
 [Discussions](https://github.com/Nico-LaFoucate/Neutron/discussions). Report security problems
 privately: see [`SECURITY.md`](SECURITY.md). To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Support Neutron
+
+Neutron was made for free, and every donation helps keep the project alive and in development.
+
+- [Patreon](https://patreon.com/neutronproject): monthly support
+- [Ko-fi](https://ko-fi.com/neutroncollider): one-time or monthly
+
 ## License
 
 Mud Hut is licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
