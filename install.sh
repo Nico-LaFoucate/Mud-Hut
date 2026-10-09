@@ -42,19 +42,12 @@ for t in "${RUNTIME_TOOLS[@]}"; do
     install -Dm644 "$REPO/tools/$t" "$SHARE/tools/$t"
 done
 
-# The public ACCCx runtime packages. seed_runtime() extracts ADC/ADC64 from these
-# to put HDBox/HDPIM into a prefix, so WITHOUT THEM NO INSTALL CAN RUN. They were
-# resolved from $HOME/mudhut-parent-stage/packages -- a dev-box scratch dir that
-# exists on exactly one machine, so every install elsewhere died naming a
-# directory the user was never given. Ship them beside the binary instead.
-#
-# All five sets: AAM (AdobeApplicationManager), ACC/ACC64 (the Creative Cloud Desktop
-# app itself) and ADC/ADC64 (Adobe Desktop Common). Seeding only ADC/ADC64 ran the
-# install engine but left a prefix with no CC Desktop and no AdobeApplicationManager,
-# which a known-good 2025 prefix has. Verified by extracting from
-# a subset containing just those (31 components, 426 files, HDPIM.dll landing in
-# the right HDBox path). AAM/ACC/ACC64 are a further 77 MB the install leg never
-# reads.
+# Optional: stage Adobe's ACCCx packages beside the binary. Mud Hut does not need this:
+# without them it downloads Adobe's Creative Cloud package and checks its md5 on the
+# first install (or up front with `mudhut accc`). When the folder below exists
+# (MUDHUT_ACCC_SRC, or the old development default), all five sets are copied:
+# AAM (AdobeApplicationManager), ACC/ACC64 (the Creative Cloud Desktop app itself)
+# and ADC/ADC64 (Adobe Desktop Common).
 ACCC_SRC="${MUDHUT_ACCC_SRC:-$HOME/mudhut-parent-stage/packages}"
 if [ -d "$ACCC_SRC" ]; then
     echo "==> staging the ACCCx runtime packages (~318 MB)"
@@ -65,8 +58,8 @@ if [ -d "$ACCC_SRC" ]; then
         cp -a "$ACCC_SRC/$_s" "$SHARE/accc-packages/"
     done
 else
-    echo "!! ACCCx packages not found at $ACCC_SRC — 'mudhut install' will refuse to run."
-    echo "   Set MUDHUT_ACCC_SRC to their location and re-run."
+    echo "==> Adobe's Creative Cloud package (ACCCx) will be downloaded on the first install"
+    echo "    (or now: mudhut accc)"
 fi
 
 mkdir -p "$BIN"

@@ -42,7 +42,7 @@ pub struct Config {
 /// a mismatched wine wineboot-clobbers its patched natives.
 pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>) -> Result<Config> {
     let wine = resolve_wine(prefix).context(
-        "no wine found — set $MUDHUT_WINE or install the Neutron runtime (`neutron runtime install`)",
+        "neutron-wine isn't installed. Run `neutron setup` first (or set $MUDHUT_WINE).",
     )?;
     let hdpim_host = repo_tools.join("hdpim_host.exe");
     let extractor = repo_tools.join("extract_accc_runtime.py");

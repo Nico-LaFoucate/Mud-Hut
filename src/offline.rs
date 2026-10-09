@@ -95,8 +95,7 @@ pub fn install(
 
     let products = products_dir(&root).with_context(|| {
         format!(
-            "{} is not an offline package (no <SAP>/Application.json found — \
-             stage one with `mudhut download <app> --dest <dir>`)",
+            "{} is not an offline package (no <SAP>/Application.json found)",
             source.display()
         )
     })?;

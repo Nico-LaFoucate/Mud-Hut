@@ -290,7 +290,7 @@ def extract_pima(plan, drive_c_real, dry_run, verbose):
             raise ExtractError("corrupt entry %s in %s" % (bad, plan["pima"]))
         for info in zf.infolist():
             name = info.filename
-            # normalise, reject absolute / traversal
+            # normalize, reject absolute / traversal
             rel = name.replace("\\", "/")
             if rel.startswith("/") or ".." in PurePosixPath(rel).parts:
                 raise ExtractError("unsafe zip entry %r in %s" % (name, plan["pima"]))
@@ -347,7 +347,7 @@ def main(argv=None):
 
     drive_c = resolve_drive_c(args.prefix)
     # For containment checks we need a real anchor; if drive_c exists use its
-    # realpath, else use the normalised (non-existent) path -- writes won't
+    # realpath, else use the normalized (non-existent) path -- writes won't
     # happen in that case anyway (dry-run against a fake prefix).
     drive_c_real = os.path.realpath(drive_c) if os.path.exists(drive_c) \
         else os.path.normpath(drive_c)

@@ -407,7 +407,7 @@ fn print_plan_human(plan: &DownloadPlan) {
         if plan.dependencies.is_empty() {
             String::new()
         } else {
-            format!(" (+{} shared dependencies, resolved later)", plan.dependencies.len())
+            format!(" (+{} shared components, not downloaded by this command)", plan.dependencies.len())
         }
     );
     for p in &plan.packages {

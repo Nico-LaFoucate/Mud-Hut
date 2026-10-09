@@ -60,7 +60,7 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
         let ok = missing.is_empty();
         checks.push(Check { name: "tools", ok, required: true,
             detail: if ok { format!("install tools at {}", tools.display()) }
-                    else { format!("missing {} under {} — re-run install.sh or set $MUDHUT_TOOLS",
+                    else { format!("missing {} under {} — set $MUDHUT_TOOLS, or re-run ./install.sh if you built Mud Hut from source",
                                    missing.join(", "), tools.display()) } });
     }
 

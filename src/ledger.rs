@@ -157,7 +157,7 @@ pub fn cmd_ledger(em: &Emitter) -> Result<()> {
         println!("  platform:      {}", l.default_platform);
         println!("  {} app(s):", l.apps.len());
         for (id, a) in &l.apps {
-            println!("    {:<14} [{}] v{} {}", id, a.sap, a.version, l.platform_for(a));
+            println!("    {:<14} [{}] {}", id, a.sap, l.platform_for(a));
         }
     }
     Ok(())

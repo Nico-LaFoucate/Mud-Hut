@@ -60,14 +60,15 @@ enum Cmd {
     },
     /// List installable Adobe apps; with --source, report what's present there.
     Apps {
-        /// A Windows install root (drive_c, a mounted C:, or a copied tree), or
-        /// an offline package dir (`<SAP>/Application.json` payload layout).
+        /// A Windows install root (drive_c, a mounted C:, or a copied tree), or an
+        /// offline package: a dir (`<SAP>/Application.json` payload layout) or a disc
+        /// image (`.iso`/`.img`).
         #[arg(long)]
         source: Option<PathBuf>,
     },
     /// Install one app (or the whole suite) into a Neutron prefix.
     Install(InstallArgs),
-    /// Show the resolved download ledger (endpoints, SAP codes, versions).
+    /// Show the resolved download ledger (endpoints, apps and their SAP codes).
     Ledger,
     /// Download and verify Adobe's Creative Cloud package (ACCCx) now, instead of on the first
     /// install. `neutron setup` runs this.
@@ -101,15 +102,18 @@ struct InstallArgs {
     #[arg(long)]
     suite: bool,
 
-    /// Ingestion method: how to acquire the app bits. All methods feed the same
-    /// stage->provision pipeline; they differ only in acquisition.
+    /// Ingestion method: `windows` copies an existing install; `download` and
+    /// `offline` run Adobe's installer engine. Every method ends with
+    /// `neutron prefix provision`.
     #[arg(long, value_enum, default_value_t = Method::Windows)]
     method: Method,
 
     /// Source path. For `windows`: a Windows install root (drive_c / mounted C: /
-    /// copied tree). For `offline`: the package dir (`<SAP>/` payload layout, as
-    /// staged by `mudhut download --dest`). May be read-only — a mounted ISO
-    /// works; the driver XML then goes to a scratch dir with absolute paths.
+    /// copied tree). For `offline`: a package dir (`<SAP>/Application.json` +
+    /// payload layout) or a disc image (`.iso`/`.img`), which Mud Hut mounts
+    /// read-only; a read-only source works, the driver XML then goes to a scratch
+    /// dir with absolute paths. For `download`: optional, packages you already
+    /// staged (nothing is downloaded).
     #[arg(long)]
     source: Option<PathBuf>,
 
@@ -136,12 +140,14 @@ struct InstallArgs {
 enum Method {
     /// Copy from an existing Windows install (implemented).
     Windows,
-    /// Install genuine from Adobe via the HDPIM offline engine (decrypt; no
-    /// Set-up.exe/WAM/CC-desktop). Needs `--source <staged products dir>` for now.
+    /// Install genuine from Adobe via HDPIM (decrypt; no Set-up.exe/WAM/CC-desktop).
+    /// Downloads the app and its components; `--source` reuses packages you
+    /// already staged.
     Download,
     /// Install from a pre-downloaded Adobe offline package — the ESD products
-    /// layout `mudhut download --dest` stages (`<SAP>/Application.json` + payload
-    /// zips). Fully local. Needs `--source <dir>`; a mounted ISO is fine.
+    /// layout (`<SAP>/Application.json` + payload zips). Fully local. Needs
+    /// `--source`: the package dir, or a disc image (`.iso`/`.img`) that Mud Hut
+    /// mounts read-only.
     Offline,
 }
 
