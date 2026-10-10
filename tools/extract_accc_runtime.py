@@ -399,7 +399,11 @@ def main(argv=None):
         log("== packageSet %s  ->  %s (%s)" % (set_name, TOKEN_MAP.get(eff_token, "??"), eff_token))
         for pkg_name, pimx_rel in selected:
             try:
-                plan = plan_component(packages_dir, drive_c, set_name, token,
+                # Plan against drive_c_real, the same anchor the containment check uses.
+                # With the unresolved path, a home behind a symlink (Bazzite, Silverblue and
+                # other Fedora Atomic desktops: /home -> /var/home) made every target look like
+                # an escape: "path escape blocked" for all 60 components, nothing extracted.
+                plan = plan_component(packages_dir, drive_c_real, set_name, token,
                                       pkg_name, pimx_rel)
                 nf, nb, nw = extract_pima(plan, drive_c_real, args.dry_run, args.verbose)
             except ExtractError as e:
