@@ -451,7 +451,13 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
             .status_ok("reg add (Win11 spoof)")?;
     }
     // Remove the HKCU Wine version override (else Wine forces build 22000).
+    // ⛔ Output to /dev/null, never inherited: on a fresh prefix the value is absent and `reg`
+    // says so ON STDOUT, in the system language and the Windows OEM code page. On a French
+    // system that line is not UTF-8, it landed in our NDJSON stream, and Collider stopped
+    // reading mid-install (GitHub Neutron#11).
     let _ = wine(cfg, prefix, &["reg", "delete", r"HKCU\Software\Wine", "/v", "Version", "/f"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status(); // ok if absent
 
     // Microsoft's components BEFORE Adobe's installer, which looks for the VC++ runtimes: VC++ 2013

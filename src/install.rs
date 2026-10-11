@@ -11,7 +11,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -161,12 +161,15 @@ fn finish(em: &Emitter, r: InstallResult) -> Result<()> {
     Ok(())
 }
 
-/// Run `neutron prefix provision <prefix>`, inheriting output.
+/// Run `neutron prefix provision <prefix>`, its output shown on OUR STDERR. Our stdout is the
+/// `--json` NDJSON stream Collider reads; a child's text there (Wine's, in the user's language
+/// and code page) can break the reader (GitHub Neutron#11).
 pub fn provision(prefix: &Path) -> Result<()> {
     let status = Command::new("neutron")
         .arg("prefix")
         .arg("provision")
         .arg(prefix)
+        .stdout(Stdio::from(std::io::stderr()))
         .status()
         .context("could not run `neutron` (is the Neutron runtime installed?)")?;
     if !status.success() {
