@@ -20,6 +20,8 @@ body:
         - Lightroom Classic
         - Media Encoder
         - Lightroom (experimental)
+        - Audition (experimental)
+        - InDesign (experimental)
         - Other
     validations:
       required: true

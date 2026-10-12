@@ -25,6 +25,8 @@
     "animate":      { "sap": "FLPR", "name": "Animate",           "version": "24.0",  "family": "Animate" },
     "lightroom":    { "sap": "LTRM", "name": "Lightroom Classic", "version": "14.0",  "family": "Lightroom Classic" },
     "mediaencoder": { "sap": "AME",  "name": "Media Encoder",     "version": "25.0",  "family": "Media Encoder" },
-    "lightroomcc":  { "sap": "LRCC", "name": "Lightroom (experimental)", "version": "9.0", "family": "Lightroom" }
+    "lightroomcc":  { "sap": "LRCC", "name": "Lightroom (experimental)", "version": "9.0", "family": "Lightroom" },
+    "audition":     { "sap": "AUDT", "name": "Audition (experimental)", "version": "26.0", "family": "Audition" },
+    "indesign":     { "sap": "IDSN", "name": "InDesign (experimental)", "version": "21.0", "family": "InDesign" }
   }
 }

@@ -62,6 +62,12 @@ pub fn apps() -> Vec<App> {
         // can try it; the engine has a matching `lightroomcc` launch profile.
         App { id: "lightroomcc",  name: "Lightroom (experimental)", sap: "LRCC", dir_prefix: "Adobe Lightroom CC",
               exe: "lightroom.exe", categories: "Graphics;Photography;", mime: &[] },
+        // EXPERIMENTAL: Audition and InDesign are not supported yet. Listed so people can try
+        // them (Neutron discussion #8); the engine has matching launch profiles.
+        App { id: "audition",     name: "Audition (experimental)", sap: "AUDT", dir_prefix: "Adobe Audition",
+              exe: "Adobe Audition.exe", categories: "AudioVideo;Audio;AudioVideoEditing;", mime: &[] },
+        App { id: "indesign",     name: "InDesign (experimental)", sap: "IDSN", dir_prefix: "Adobe InDesign",
+              exe: "InDesign.exe", categories: "Graphics;Publishing;", mime: &[] },
     ]
 }
 
