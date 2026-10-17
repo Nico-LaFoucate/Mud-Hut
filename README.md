@@ -43,7 +43,20 @@ mudhut install --suite --method windows --source <C:> --prefix <dir>
 mudhut download <app> [--dest DIR] [--core-only]   # fetch+verify the app's own packages (not an offline package)
 mudhut accc                                         # fetch+verify Adobe's Creative Cloud package (ACCCx) now
 mudhut ledger                                       # show the resolved Adobe endpoints/apps
+
+# Adobe app updates (Collider runs these for you):
+mudhut inventory --prefix <dir>                     # which Adobe apps a prefix holds, at which build
+mudhut check-updates --prefix <dir> | --all-prefixes   # newer builds Adobe offers (read-only, safe while apps are open)
+mudhut update --prefix <dir> <app>... | --all       # update in place within the yearly version [--to BUILD] [--allow-unverified] [--no-snapshot] [--dry-run]
+mudhut rollback --prefix <dir> [--app <app>]        # put back the version an update replaced
+mudhut snapshots --prefix <dir>                     # list the rollback copies kept in a prefix
+
+# A new yearly version beside the old one (optionally removing the old one afterwards):
+mudhut install <app> --method download --prefix <dir> --version <major> [--remove-previous]
 ```
+
+Premiere Pro and Media Encoder installs leave out the speech-to-text language packs (about
+14.5 GB), as Creative Cloud does; `--speech-packs` adds them.
 
 ## Ingestion methods
 
@@ -110,6 +123,20 @@ Requires [Neutron](https://github.com/Nico-LaFoucate/neutron) and its runtime
 (`neutron setup` installs both). The install engine finds Wine via the Neutron runtime
 or `$MUDHUT_WINE`.
 
+## Updating Adobe apps
+
+`mudhut update` updates an app within its yearly version (for example Premiere Pro 26.3 → 26.5)
+through Adobe's own installer, so preferences, presets, plugins and the Adobe sign-in stay as
+they are. Apps copied from a Windows install can be updated too. Every Adobe app in the prefix
+must be closed first.
+
+- **Rollback copy.** Before an update, Mud Hut keeps a copy of what it is about to replace and
+  puts it back automatically if anything fails; `mudhut rollback` puts it back later.
+  `--no-snapshot` skips the copy to save disk space.
+- **Verified builds.** Neutron publishes a signed list of the Adobe builds it has verified
+  ([`ledger/verified.json`](ledger/verified.json)). Newer builds still show up, marked as not
+  yet verified, and need `--allow-unverified`.
+
 ## Installing
 
 `neutron setup` installs Mud Hut for you. To build and install it from source instead:
@@ -146,6 +173,9 @@ Adobe's product feed requires two client identifiers, which Mud Hut sends:
 Everywhere Adobe accepts it, Mud Hut identifies itself honestly as `MudHut/<version>`. The one
 exception is Adobe's download CDN: it only serves app packages to Adobe's own installer, so
 package downloads use the User-Agent `Adobe Application Manager 2.0`.
+
+The list of verified builds comes from this repository on GitHub
+(`raw.githubusercontent.com`), not from Adobe.
 
 ## Status
 
