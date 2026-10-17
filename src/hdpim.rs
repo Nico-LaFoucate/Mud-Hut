@@ -764,15 +764,18 @@ pub fn run_hdpim(
         // Read the log AFTER polling, so a completion line written just before the host
         // exited is seen.
         let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
-        if log.len() != last_len {
-            last_len = log.len();
+        // Progress is HDPIM's own output; the host's "[host] alive" heartbeat every 10 s is not.
+        let hdpim_lines = log.matches("HDPIM[").count();
+        if hdpim_lines != last_len {
+            last_len = hdpim_lines;
             last_growth = Instant::now();
         }
 
         // A package task failed and HDPIM then went quiet. Measured on a corrupted package:
         // four extract retries, "Error occurred in extract of package (...). Error code: '127'",
-        // then no workflow error and no further output; the host would have sat out its
-        // 40-minute ceiling. Two silent minutes after a task error is the failure.
+        // then no workflow error and no further HDPIM output (only the host's heartbeat); the host
+        // would have sat out its 40-minute ceiling. Two silent minutes after a task error is the
+        // failure.
         if let Some(code) = task_error(&log) {
             if last_growth.elapsed() >= Duration::from_secs(120) {
                 stop(&mut child);

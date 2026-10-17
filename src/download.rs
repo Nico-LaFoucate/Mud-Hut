@@ -300,6 +300,7 @@ fn remove_previous_majors(
     plan: &DownloadPlan,
 ) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
+    let name = cat.name.trim_end_matches(" (experimental)");
     let new_major = crate::version::major(&plan.product_version);
     let db = crate::hdpimdb::Db::read(prefix)?.unwrap_or(crate::hdpimdb::Db { products: vec![] });
     let olds: Vec<crate::hdpimdb::Product> = db
@@ -312,7 +313,7 @@ fn remove_previous_majors(
     for old in olds {
         let (codex, base) = (old.codex.clone(), old.base().unwrap_or_default().to_string());
         let platform = old.meta.get("Platform").cloned().unwrap_or_else(|| "win64".into());
-        em.progress("remove-previous", 50, &format!("removing {} {} (your settings stay)", cat.name, codex));
+        em.progress("remove-previous", 50, &format!("removing {name} {codex} (your settings stay)"));
         let dir = std::env::temp_dir().join(format!("mudhut-uninstall-{}-{}", std::process::id(), codex));
         let xml = crate::driver::write_uninstall_xml(&dir, &plan.name, &plan.sap, &codex, &base, &platform)?;
         let expect = crate::hdpim::Expect { sap: plan.sap.clone(), base: base.clone(), build: None };
@@ -321,7 +322,7 @@ fn remove_previous_majors(
         match r {
             Ok(_) => out.push(serde_json::json!({"version": old.build(), "removed": true})),
             Err(e) => {
-                em.note(&format!("could not remove {} {codex}: {e:#}", cat.name));
+                em.note(&format!("could not remove {name} {codex}: {e:#}"));
                 out.push(serde_json::json!({"version": old.build(), "removed": false, "message": format!("{e:#}")}));
             }
         }

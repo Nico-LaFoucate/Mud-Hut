@@ -105,9 +105,30 @@ fn plan_for(ledger: &crate::ledger::Ledger, c: &Candidate, app_id: &str, opts: &
     Some(crate::feed::plan_with(&c.to_build(app_id), &m, "en_US", opts))
 }
 
-/// Download size for an update (None when a manifest is not available).
-pub fn download_bytes(ledger: &crate::ledger::Ledger, a: &InstalledApp, target: &Candidate, adopt_from: Option<&Candidate>, offline: bool) -> Option<u64> {
+/// Bytes of every dependency the build names (an update stages them all, unchanged ones too:
+/// HDPIM uninstalls a dependency the request leaves out). None when a manifest is missing.
+fn deps_bytes(ledger: &crate::ledger::Ledger, deps_doc: Option<&str>, t: &crate::feed::DownloadPlan, offline: bool) -> Option<u64> {
+    if t.dependencies.is_empty() {
+        return Some(0);
+    }
+    let doc = roxmltree::Document::parse(deps_doc?).ok()?;
+    let mut total = 0;
+    for d in &t.dependencies {
+        let c = ["win64", "win32"].iter().find_map(|plat| {
+            let all = crate::feed::candidates_from_doc(&doc, &d.sap, plat);
+            all.iter().find(|c| !d.base_version.is_empty() && crate::version::eq(&c.base(), &d.base_version)).cloned().or_else(|| all.first().cloned())
+        })?;
+        total += plan_for(ledger, &c, &d.sap.to_lowercase(), &crate::feed::PlanOpts::default(), offline)?.total_bytes;
+    }
+    Some(total)
+}
+
+/// Download size for an update (None when a manifest is not available): the whole planned build
+/// plus every dependency it names. Files already on disk under another build are reused when
+/// the update runs, so the real download can be smaller.
+pub fn download_bytes(ledger: &crate::ledger::Ledger, deps_doc: Option<&str>, a: &InstalledApp, target: &Candidate, adopt_from: Option<&Candidate>, offline: bool) -> Option<u64> {
     let t = plan_for(ledger, target, &a.id, &update_plan_opts(a), offline)?;
+    let deps = deps_bytes(ledger, deps_doc, &t, offline)?;
     // HDPIM's update needs every package of the build in its download folder (unchanged ones
     // too), so the download is the whole planned build; packages already on disk under another
     // build are reused when the update runs.
@@ -116,13 +137,13 @@ pub fn download_bytes(ledger: &crate::ledger::Ledger, a: &InstalledApp, target: 
         // then updates it.
         let from = adopt_from?;
         if from.build_guid == target.build_guid {
-            return Some(t.total_bytes);
+            return Some(t.total_bytes + deps);
         }
         let f = plan_for(ledger, from, &a.id, &crate::feed::PlanOpts::default(), offline)?;
         let same: u64 = t.packages.iter().filter(|p| f.packages.iter().any(|q| q.path == p.path)).map(|p| p.bytes).sum();
-        return Some(f.total_bytes + t.total_bytes - same);
+        return Some(f.total_bytes + t.total_bytes - same + deps);
     }
-    Some(t.total_bytes)
+    Some(t.total_bytes + deps)
 }
 
 /// Bytes of the packages whose version changed (what is new in the build).
@@ -150,6 +171,7 @@ fn check_prefix(
     prefix: &str,
     ledger: &crate::ledger::Ledger,
     docs: &std::collections::BTreeMap<String, String>,
+    deps_doc: Option<&str>,
     verified: &crate::verified::Loaded,
     only: &[String],
     offline: bool,
@@ -211,7 +233,7 @@ fn check_prefix(
                 "to": t.product_version,
                 "label": crate::version::label(&t.product_version),
                 "verified": entry.is_some(),
-                "download_bytes": download_bytes(ledger, a, t, adopt_from.as_ref(), offline),
+                "download_bytes": download_bytes(ledger, deps_doc, a, t, adopt_from.as_ref(), offline),
                 "changed_bytes": changed_download_bytes(ledger, a, t, offline),
                 "can_update": blocked_reason.is_none(),
                 "blocked_reason": blocked_reason,
@@ -319,12 +341,14 @@ pub fn cmd_check_updates(em: &Emitter, o: CheckOpts) -> Result<()> {
             docs.insert(plat.clone(), x);
         }
     }
+    // The shared components (Camera Raw, CCX, ...) are listed in the 32/64-bit feed.
+    let deps_feed = feedcache::feed(&ledger, "win32,win64", o.max_age, mode);
     let now = crate::clock::now_secs();
     let next = match (online, fetched_at) {
         (true, Some(t)) => t + o.max_age.as_secs().max(60),
         _ => now + o.max_age.as_secs().clamp(60, 3600),
     };
-    let rows: Vec<Value> = prefixes.iter().map(|p| check_prefix(p, &ledger, &docs, &verified, &o.apps, offline)).collect();
+    let rows: Vec<Value> = prefixes.iter().map(|p| check_prefix(p, &ledger, &docs, deps_feed.xml.as_deref(), &verified, &o.apps, offline)).collect();
 
     if !em.is_json() {
         if let Some(e) = &feed_error {

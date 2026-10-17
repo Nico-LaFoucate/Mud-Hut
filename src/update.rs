@@ -215,15 +215,23 @@ fn plan_shallow(p: &DownloadPlan) -> DownloadPlan {
     }
 }
 
-/// Resolve, per dependency the target names, whether its build changes; returns the changed ones
-/// (their plan + raw manifest) and rewrites `plan.dependencies` to just those. A dependency is
-/// matched by (SAP code, base version), as Adobe's engine does; one already at the newest build
-/// of its base is left out of the request (HDPIM has nothing to do for it).
-fn plan_deps(ledger: &crate::ledger::Ledger, db: Option<&crate::hdpimdb::Db>, plan: &mut DownloadPlan) -> Result<Vec<(DownloadPlan, String)>> {
-    let mut changed = Vec::new();
+/// Every dependency the target build names, resolved to the newest build of its base, with its
+/// plan + raw manifest. ALL of them go into the request and are staged in full, unchanged ones
+/// too.
+///
+/// 🚨 HDPIM takes the request's dependency list as the product's new set of references and
+/// UNINSTALLS a dependency no request lists any more when nothing else refers to it. Measured
+/// (lab, 2026-10-16, Photoshop 27.8 -> 27.11 with the unchanged dependencies left out of the
+/// request): "Starting 'UN-INSTALL' task for Package (Name: AdobeUXPWebViewSupport_x64-mul ...)",
+/// the Adobe Color profiles, UAM and the 3D viewer plug-in were removed, and their records with
+/// them. On the copy of a Windows machine they survived only because After Effects and Premiere
+/// still referred to them. And like the app's own unchanged packages, an unchanged dependency
+/// must be present in the ESD folder (HDPIM: "selected but only DB operation required").
+fn plan_deps(ledger: &crate::ledger::Ledger, plan: &mut DownloadPlan) -> Result<Vec<(DownloadPlan, String)>> {
+    let mut deps = Vec::new();
     let mut keep = Vec::new();
     if plan.dependencies.is_empty() {
-        return Ok(changed);
+        return Ok(deps);
     }
     let xml = feed_xml(ledger, "win32,win64")?;
     let doc = roxmltree::Document::parse(&xml).context("parsing Adobe's product list")?;
@@ -238,17 +246,13 @@ fn plan_deps(ledger: &crate::ledger::Ledger, db: Option<&crate::hdpimdb::Db>, pl
             }
         }
         let Some(c) = picked else { continue };
-        let installed = db.and_then(|db| db.product(&d.sap, &d.base_version));
-        if installed.and_then(|p| p.build()).map(|b| crate::version::eq(b, &c.product_version)).unwrap_or(false) {
-            continue;
-        }
         let (m, raw) = manifest(ledger, &c)?;
         let dp = crate::feed::plan(&c.to_build(&d.sap.to_lowercase()), &m, "en_US");
         keep.push(d.clone());
-        changed.push((dp, raw));
+        deps.push((dp, raw));
     }
     plan.dependencies = keep;
-    Ok(changed)
+    Ok(deps)
 }
 
 fn plan_job(
@@ -344,11 +348,11 @@ fn plan_job(
 }
 
 /// Resolve the job's plans and sizes (network: manifests).
-fn resolve_job(ledger: &crate::ledger::Ledger, db: Option<&crate::hdpimdb::Db>, job: &mut Job) -> Result<()> {
+fn resolve_job(ledger: &crate::ledger::Ledger, job: &mut Job) -> Result<()> {
     let (m, raw) = manifest(ledger, &job.target)?;
     let opts = crate::updates::update_plan_opts(&job.app);
     let mut plan = crate::feed::plan_with(&job.target.to_build(&job.app.id), &m, "en_US", &opts);
-    job.deps = plan_deps(ledger, db, &mut plan)?;
+    job.deps = plan_deps(ledger, &mut plan)?;
     // ⛔ EVERY planned package is staged, not only the changed ones. HDPIM's update mode checks
     // that each package it selects is in the ESD folder, including an unchanged one it only
     // needs "a DB operation" for: Photoshop 27.8 -> 27.11 with only the changed packages staged
@@ -551,7 +555,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     for a in &wanted {
         em.set_app(Some(&a.id));
         match plan_job(&ledger, &vl.list, a, o.to.as_deref(), o.allow_unverified) {
-            Ok(Some(mut j)) => match resolve_job(&ledger, inv.db.as_ref(), &mut j) {
+            Ok(Some(mut j)) => match resolve_job(&ledger, &mut j) {
                 Ok(()) => jobs.push(j),
                 Err(e) => outcomes.push(fail_outcome(&a.id, a.version.clone(), None, &e)),
             },
