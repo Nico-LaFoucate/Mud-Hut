@@ -1,0 +1,136 @@
+{
+ "schema": 1,
+ "serial": 1,
+ "updated": "2026-10-16T21:00:00Z",
+ "draft": true,
+ "note": "DRAFT for the operator to confirm (2026-10-16): seeded from the Adobe builds installed in the clean-room release-test prefixes (/var/tmp/neutron-release-test, read-only reads of caps/hdpim.db). min_runtime is unknown for every entry. Not included: LrcRelease's apps (copied without Adobe's records: Animate 24.0.10, Audition 26.5, InDesign 21.6, Lightroom Classic 15.6, Premiere Pro 25.3 by their AMT records).",
+ "default_policy": "hold",
+ "apps": {
+  "AEFT": {
+   "26.0": {
+    "verified": [
+     {
+      "build": "26.3.0.87",
+      "build_guid": "455613f2-4255-4335-a7e4-9b492a3dafcd",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe After Effects 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "AME": {
+   "26.0": {
+    "verified": [
+     {
+      "build": "26.3.1.1",
+      "build_guid": "aa13b799-c921-4790-ba08-8decdfc0dc77",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Media Encoder 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "FLPR": {
+   "24.0": {
+    "verified": [
+     {
+      "build": "24.0.13.5",
+      "build_guid": "5d6d877b-f42c-40f9-8057-aba4f581ac6c",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Animate 2024"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "ILST": {
+   "30.0": {
+    "verified": [
+     {
+      "build": "30.6.0.109",
+      "build_guid": "41982d8d-ce3f-47b0-9a9b-caeeabde058a",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Illustrator 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "LTRM": {
+   "8.3": {
+    "verified": [
+     {
+      "build": "15.4.1.202606201310",
+      "build_guid": "e38c7eb4-6bd2-48ca-b94a-ea79441abc3c",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Lightroom Classic, LrcCopy"
+     },
+     {
+      "build": "15.6.0.202609251514",
+      "build_guid": "037c795f-d679-415b-8efc-69ce9b37baef",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix LrcDownload (Mud Hut download (HDPIM)): Adobe Lightroom Classic"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "PHSP": {
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.8.0.13",
+      "build_guid": "42814038-f7e8-483c-831f-d5a4c3fce17f",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Photoshop 2026"
+     },
+     {
+      "build": "27.11.0.26",
+      "build_guid": "1c96161b-1fd8-4836-ab2b-cb0732eecc53",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix Adobe (Mud Hut download (HDPIM)): Adobe Photoshop 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "PPRO": {
+   "26.0": {
+    "verified": [
+     {
+      "build": "26.3.0.93",
+      "build_guid": "c7881bba-e8f6-414f-8466-6c885cf60288",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix AE2026 (copied from Windows): Adobe Premiere Pro 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "LRCC": {
+   "1.0": {
+    "verified": [
+     {
+      "build": "9.6.202609231659",
+      "build_guid": "cefa1965-58cc-4858-ae98-6823ed2889b0",
+      "min_runtime": null,
+      "date": "2026-10-16",
+      "source": "clean-room prefix Lightroom (Mud Hut download (HDPIM)): Adobe Lightroom CC, LightroomNew"
+     }
+    ],
+    "blocked": []
+   }
+  }
+ }
+}

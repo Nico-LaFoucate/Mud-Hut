@@ -112,6 +112,25 @@ impl Ledger {
         Ok(l)
     }
 
+    /// The ledger for a check that must be quick: offline, the bundled copy at once; online, one
+    /// short try at the remote copy (5 s), then the bundled one.
+    pub fn load_quick(em: &Emitter, offline: bool) -> Result<Ledger> {
+        if !offline {
+            let url = std::env::var("MUDHUT_LEDGER_URL").unwrap_or_else(|_| DEFAULT_LEDGER_URL.to_string());
+            let agent = crate::net::quick_agent(Duration::from_secs(5), Duration::from_secs(5));
+            if let Ok(body) = agent.get(&url).call().map_err(anyhow::Error::from).and_then(|r| Ok(r.into_string()?)) {
+                if let Ok(mut l) = serde_json::from_str::<Ledger>(&body) {
+                    l.origin = format!("remote:{url}");
+                    return Ok(l);
+                }
+            }
+        }
+        let _ = em;
+        let mut l: Ledger = serde_json::from_str(BUNDLED_LEDGER).context("bundled ledger is invalid — this is a Mud Hut build bug")?;
+        l.origin = "bundled".to_string();
+        Ok(l)
+    }
+
     /// Look up an app's ledger entry by Mud Hut id. (Used by `download` — 1.3.)
     #[allow(dead_code)]
     pub fn app(&self, id: &str) -> Option<&LedgerApp> {

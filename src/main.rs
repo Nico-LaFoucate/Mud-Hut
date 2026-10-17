@@ -15,19 +15,26 @@
 mod output;
 mod busy;
 mod catalog;
+mod clock;
 mod doctor;
 mod download;
 mod driver;
 mod failure;
 mod feed;
+mod feedcache;
 mod hdpim;
 mod hdpimdb;
 mod install;
+mod inventory;
 mod ledger;
 mod iso;
 mod net;
 mod offline;
+mod pe;
 mod source;
+mod state;
+mod updates;
+mod verified;
 mod version;
 mod windows;
 
@@ -78,6 +85,39 @@ enum Cmd {
     /// Download and verify Adobe's Creative Cloud package (ACCCx) now, instead of on the first
     /// install. `neutron setup` runs this.
     Accc,
+    /// Which Adobe apps a prefix holds, at which build, and how they got there (read-only, no
+    /// wine; safe while apps run).
+    Inventory {
+        /// A prefix to read (repeatable). Echoed exactly as given.
+        #[arg(long, required = true)]
+        prefix: Vec<String>,
+    },
+    /// Which Adobe updates exist for the apps in one or more prefixes. Read-only and wine-free
+    /// (safe on a timer and beside open apps); offline answers from the cache with exit 0.
+    #[command(name = "check-updates")]
+    CheckUpdates {
+        /// A prefix to check (repeatable). Echoed exactly as given.
+        #[arg(long)]
+        prefix: Vec<String>,
+        /// Every prefix neutron knows (`neutron --json prefix list`).
+        #[arg(long)]
+        all_prefixes: bool,
+        /// Only these apps (repeatable, e.g. --app photoshop).
+        #[arg(long)]
+        app: Vec<String>,
+        /// Reuse Adobe's product list fetched within this long (e.g. 6h, 30m, 1d; 0 = fetch now).
+        #[arg(long, default_value = "6h", value_parser = clock::parse_duration)]
+        max_age: std::time::Duration,
+        /// Fetch Adobe's product list now, whatever its age.
+        #[arg(long)]
+        refresh: bool,
+        /// Never touch the network: answer from what is cached.
+        #[arg(long)]
+        offline: bool,
+        /// Answer at once from what is cached (no network), for a first paint.
+        #[arg(long)]
+        cached: bool,
+    },
     /// Resolve + download an app from Adobe (feed -> buildGuid -> manifest -> plan
     /// -> fetch+verify). Without --dest, reports the plan and downloads nothing.
     Download {
@@ -195,6 +235,10 @@ fn main() -> ExitCode {
             }
         }),
         Cmd::Ledger => ledger::cmd_ledger(&em),
+        Cmd::Inventory { prefix } => inventory::cmd_inventory(&em, &prefix),
+        Cmd::CheckUpdates { prefix, all_prefixes, app, max_age, refresh, offline, cached } => {
+            updates::cmd_check_updates(&em, updates::CheckOpts { prefixes: prefix, all_prefixes, apps: app, max_age, refresh, offline, cached })
+        }
         Cmd::Accc => download::prefetch_accc(&em),
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())

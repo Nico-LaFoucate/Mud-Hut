@@ -31,6 +31,10 @@ libc = "0.2"
 # Adobe's own install record, caps/hdpim.db, read-only (`immutable=1`). `bundled` compiles SQLite
 # in, so no system libsqlite is needed on any distro.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# The verified-builds list is signed (minisign / Ed25519); the public key is compiled in.
+minisign-verify = "0.3"
+# The cached product feed is stored gzip-compressed (14 MB of XML -> ~0.4 MB).
+flate2 = "1"
 
 [profile.release]
 strip = true

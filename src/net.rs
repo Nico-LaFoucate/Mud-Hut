@@ -10,6 +10,23 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+/// An agent for the quick, single-try requests of `check-updates`: short timeouts, and IPv4
+/// addresses tried before IPv6. On a network whose IPv6 route is broken (common, and the case
+/// on the build machine), trying the AAAA addresses first cost ~4 s per request before the
+/// working IPv4 one was reached; the check runs on a timer and must not crawl.
+pub fn quick_agent(connect: Duration, total: Duration) -> ureq::Agent {
+    ureq::builder()
+        .timeout_connect(connect)
+        .timeout(total)
+        .resolver(|addr: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+            use std::net::ToSocketAddrs;
+            let mut v: Vec<std::net::SocketAddr> = addr.to_socket_addrs()?.collect();
+            v.sort_by_key(|a| a.is_ipv6());
+            Ok(v)
+        })
+        .build()
+}
+
 /// Tries per request: waits of 2, 4, 8, 16, 32, 60 and 60 seconds, about 3 minutes in all.
 pub const ATTEMPTS: u32 = 8;
 const MAX_WAIT: u64 = 60;
