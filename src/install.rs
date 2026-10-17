@@ -167,7 +167,20 @@ fn finish(em: &Emitter, r: InstallResult) -> Result<()> {
 /// `--json` NDJSON stream Collider reads; a child's text there (Wine's, in the user's language
 /// and code page) can break the reader (GitHub Neutron#11).
 pub fn provision(prefix: &Path) -> Result<()> {
-    let status = Command::new("neutron")
+    let mut cmd = Command::new("neutron");
+    // An existing prefix keeps its runtime: installing an app must not move the prefix to another
+    // runtime (that is `neutron update`'s job; `update` and `rollback` already pass it, see
+    // `provision_quiet`). Without this the CLI provisions with its own default, which re-stamps
+    // the prefix: measured 2026-10-17, `mudhut install photoshop` into a copy stamped for
+    // 11.10-131 left it stamped for 11.10-132. An explicit $NEUTRON_WINE from the caller wins.
+    if std::env::var_os("NEUTRON_WINE").is_none() {
+        if let Some(home) = std::env::var_os("HOME") {
+            if let Some(w) = crate::hdpim::runtime_for_prefix(Path::new(&home), prefix) {
+                cmd.env("NEUTRON_WINE", w);
+            }
+        }
+    }
+    let status = cmd
         .arg("prefix")
         .arg("provision")
         .arg(prefix)
