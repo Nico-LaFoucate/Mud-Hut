@@ -557,11 +557,11 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         match plan_job(&ledger, &vl.list, a, o.to.as_deref(), o.allow_unverified) {
             Ok(Some(mut j)) => match resolve_job(&ledger, &mut j) {
                 Ok(()) => jobs.push(j),
-                Err(e) => outcomes.push(fail_outcome(&a.id, a.version.clone(), None, &e)),
+                Err(e) => push(em, &mut outcomes, fail_outcome(&a.id, a.version.clone(), None, &e)),
             },
             Ok(None) => {
                 if !o.all || o.to.is_some() {
-                    outcomes.push(Outcome {
+                    push(em, &mut outcomes, Outcome {
                         app: a.id.clone(),
                         ok: true,
                         from: a.version.clone(),
@@ -578,7 +578,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
                     em.set_app(None);
                     return Err(e);
                 }
-                outcomes.push(fail_outcome(&a.id, a.version.clone(), None, &e));
+                push(em, &mut outcomes, fail_outcome(&a.id, a.version.clone(), None, &e));
             }
         }
     }
@@ -632,7 +632,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         em.progress("download", 0, &format!("{} {} ({:.2} GB)", j.app.name, crate::version::label(&j.target.product_version), j.download_bytes as f64 / 1e9));
         match download_job(em, &ledger, &mut j) {
             Ok(()) => ready.push(j),
-            Err(e) => outcomes.push(fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e)),
+            Err(e) => push(em, &mut outcomes, fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e)),
         }
     }
     em.set_app(None);
@@ -648,7 +648,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         em.set_app(Some(&j.app.id));
         set_progress(prefix, &mut st, "snapshot");
         if let Err(e) = quiesce(em, prefix) {
-            outcomes.push(fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e));
+            push(em, &mut outcomes, fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e));
             continue;
         }
         let rel = j.app.install_dir.strip_prefix(prefix).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
@@ -668,7 +668,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
                     Some(s)
                 }
                 Err(e) => {
-                    outcomes.push(fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e));
+                    push(em, &mut outcomes, fail_outcome(&j.app.id, j.from.clone(), Some(j.target.product_version.clone()), &e));
                     continue;
                 }
             }
@@ -810,6 +810,12 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         std::process::exit(exit as i32);
     }
     Ok(())
+}
+
+/// Record an app's outcome and announce it at once as its `app_result` event.
+fn push(em: &Emitter, outcomes: &mut Vec<Outcome>, oc: Outcome) {
+    em.event(&oc.json(), &oc.message);
+    outcomes.push(oc);
 }
 
 fn fail_outcome(app: &str, from: Option<String>, to: Option<String>, e: &anyhow::Error) -> Outcome {
