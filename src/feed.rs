@@ -450,7 +450,7 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
 ///
 /// ⭐ Speech packs default OFF (operator decision, 2026-10-16): Creative Cloud does not install
 /// them by default (a Windows-installed Premiere 26.3 has none of the 16), and planning every
-/// module made a default Premiere install about 13.8 GB larger, repeated by every update.
+/// module made a default Premiere install about 14.5 GB larger, repeated by every update.
 pub fn plan_with(build: &Build, manifest: &Manifest, language: &str, opts: &PlanOpts) -> DownloadPlan {
     let modules = manifest.module_list();
     let module_of = |pkg: &str| modules.iter().find(|m| m.packages.iter().any(|p| p == pkg));

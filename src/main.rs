@@ -242,7 +242,7 @@ struct InstallArgs {
     version: Option<u64>,
 
     /// Also install the speech-to-text language packs (Premiere Pro and Media Encoder; about
-    /// 13.8 GB). Off by default, as in Creative Cloud.
+    /// 14.5 GB). Off by default, as in Creative Cloud.
     #[arg(long)]
     speech_packs: bool,
 
