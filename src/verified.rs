@@ -225,7 +225,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mudhut-verified-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("verified.json");
-        std::fs::write(&fake, BUNDLED.replace("\"serial\": 1", "\"serial\": 99")).unwrap();
+        let serial = |s: &str| s.lines().find(|l| l.contains("\"serial\"")).unwrap().to_string();
+        let raised = BUNDLED.replace(&serial(BUNDLED), "  \"serial\": 99,");
+        assert_ne!(raised, BUNDLED, "the test must actually raise the serial");
+        std::fs::write(&fake, raised).unwrap();
         std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/ledger/verified.json.minisig"), dir.join("verified.json.minisig")).unwrap();
         let cache = Some((dir.join("cache/verified.json"), dir.join("cache/verified.json.minisig")));
         let l = load_with(false, cache.clone(), &format!("file://{}", fake.display()));
@@ -238,7 +241,7 @@ mod tests {
         std::fs::write(&good, BUNDLED).unwrap();
         std::fs::write(dir.join("good.json.minisig"), BUNDLED_SIG).unwrap();
         let l2 = load_with(false, cache.clone(), &format!("file://{}", good.display()));
-        assert_eq!(l2.serial, 1);
+        assert_eq!(l2.serial, serde_json::from_str::<List>(BUNDLED).unwrap().serial);
         // Equal serial to the bundled copy: the bundled one is kept (no reason to switch).
         assert_eq!(l2.source, "bundled");
         let _ = std::fs::remove_dir_all(&dir);

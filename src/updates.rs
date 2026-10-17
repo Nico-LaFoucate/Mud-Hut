@@ -85,6 +85,16 @@ pub fn installed_identity(a: &InstalledApp, cands: &[Candidate]) -> (Option<Stri
     (v, base, None)
 }
 
+/// Adobe installs yearly versions side by side, so a newer yearly version is offered once per app:
+/// on its newest installed year, and not at all when that year is installed already.
+fn newer_year_installed(apps: &[InstalledApp], a: &InstalledApp, v: &str) -> bool {
+    apps.iter().any(|o| {
+        o.sap == a.sap
+            && (o.version.as_deref().map(|ov| crate::version::major(ov) > crate::version::major(v)).unwrap_or(false)
+                || matches!((o.year, a.year), (Some(x), Some(y)) if x > y))
+    })
+}
+
 /// Bytes an update to `target` downloads: every package of its plan whose version differs from
 /// the installed one (full packages; deltas are not counted).
 fn changed_bytes(target: &crate::feed::DownloadPlan, installed: &std::collections::BTreeMap<String, String>) -> u64 {
@@ -247,6 +257,7 @@ fn check_prefix(
             _ => Value::Null,
         };
         let new_major = match (&iv, &base) {
+            (Some(v), Some(_)) if newer_year_installed(&inv.apps, a, v) => Value::Null,
             (Some(v), Some(b)) => cands
                 .iter()
                 .filter(|c| !crate::version::eq(&c.base(), b) && crate::version::major(&c.product_version) > crate::version::major(v) && !is_blocked(c))
@@ -427,6 +438,21 @@ mod tests {
         // by exe version (zero-padding differences are equal)
         let (v, _, _) = installed_identity(&adopt_app(Some("24.0.10.14"), "x"), &cands);
         assert_eq!(v.as_deref(), Some("24.0.10.14"));
+    }
+
+    #[test]
+    fn a_newer_year_already_installed_is_not_offered_again() {
+        let mut y2025 = adopt_app(None, "25.6.6");
+        (y2025.year, y2025.version) = (Some(2025), Some("25.6.6.005".into()));
+        let mut y2026 = adopt_app(None, "26.5");
+        (y2026.year, y2026.version) = (Some(2026), Some("26.5.0.82".into()));
+        let apps = vec![y2025.clone(), y2026.clone()];
+        assert!(newer_year_installed(&apps, &y2025, "25.6.6.005"));
+        assert!(!newer_year_installed(&apps, &y2026, "26.5.0.82"));
+        // Another app's newer year does not count.
+        let mut other = y2026.clone();
+        other.sap = "AUDT".into();
+        assert!(!newer_year_installed(&[y2025.clone(), other], &y2025, "25.6.6.005"));
     }
 
     #[test]
