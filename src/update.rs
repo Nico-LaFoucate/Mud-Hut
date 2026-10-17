@@ -921,7 +921,14 @@ pub fn cmd_rollback(em: &Emitter, prefix_s: &str, app: Option<&str>, snapshot: O
     let mut ok = true;
     let mut msg = String::new();
     if let (Some(cat), Some(from)) = (crate::catalog::find(&meta.app), meta.from.as_deref()) {
-        let exe = crate::inventory::inventory(prefix_s).ok().and_then(|i| i.apps.into_iter().find(|a| a.id == meta.app).and_then(|a| a.exe));
+        // Yearly versions sit side by side; an update never changes the major, so `from`'s major
+        // names the install this snapshot belongs to.
+        let year_of = |a: &InstalledApp| a.version.as_deref().map(crate::version::major) == Some(crate::version::major(from));
+        let exe = crate::inventory::inventory(prefix_s).ok().and_then(|i| {
+            let mut same: Vec<InstalledApp> = i.apps.into_iter().filter(|a| a.id == meta.app).collect();
+            let at = same.iter().position(year_of).unwrap_or(0);
+            (!same.is_empty()).then(|| same.swap_remove(at)).and_then(|a| a.exe)
+        });
         if let Some(v) = exe.as_deref().and_then(crate::pe::file_version_string) {
             if crate::version::key(&v).get(..2) != crate::version::key(from).get(..2) {
                 ok = false;
