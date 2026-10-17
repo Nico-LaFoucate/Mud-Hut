@@ -31,8 +31,10 @@ use crate::output::Emitter;
 /// `install --method download`: install a genuine app into `prefix` via the HDPIM
 /// offline engine (decrypt, no Set-up.exe/WAM/CC-desktop). Without `source`, downloads
 /// the product and its dependency components (resolved from the product feed) into the
-/// download cache; with `source`, uses the packages already staged there. Then writes
-/// the product's DriverInfo beside the packages, runs the engine and provisions.
+/// download cache; with `source`, uses the packages already staged there and downloads only
+/// what is missing. Then writes the product's DriverInfo beside the packages, runs the engine
+/// and provisions.
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     em: &Emitter,
     app: Option<&str>,
@@ -41,6 +43,7 @@ pub fn install(
     dry_run: bool,
     minimal: bool,
     keep_download: bool,
+    opts: &crate::feed::PlanOpts,
 ) -> Result<()> {
     let app_id = app.context("`--method download` needs an app id (e.g. `photoshop`)")?;
     let cat = crate::catalog::find(app_id)
@@ -48,9 +51,9 @@ pub fn install(
 
     // Resolve the product + its downloadable dependencies (lightweight: no payloads).
     let ledger = Ledger::load(em)?;
-    let build = crate::feed::resolve_build(em, &ledger, app_id)?;
+    let build = crate::feed::resolve_build_version(em, &ledger, app_id, opts.major)?;
     let (manifest, raw_manifest) = crate::feed::fetch_manifest(em, &ledger, &build)?;
-    let mut plan = crate::feed::plan(&build, &manifest, "en_US");
+    let mut plan = crate::feed::plan_with(&build, &manifest, "en_US", opts);
     let dep_builds = crate::feed::resolve_dependencies(em, &ledger, &plan.dependencies, minimal)?;
 
     // The DriverInfo's dependency list must match what's actually staged: keep only
@@ -82,51 +85,147 @@ pub fn install(
     if dry_run {
         let dep_saps: Vec<&str> = plan.dependencies.iter().map(|d| d.sap.as_str()).collect();
         em.note(&format!(
-            "(dry run) would download {} package(s) + deps [{}], then HDPIM-install {} into {}",
+            "(dry run) would download {} package(s) ({:.2} GiB) + deps [{}], then HDPIM-install {} into {}",
             plan.packages.len(),
+            plan.total_bytes as f64 / (1u64 << 30) as f64,
             dep_saps.join(", "),
             cat.name,
             prefix.display()
         ));
+        if em.is_json() {
+            em.result(&serde_json::json!({
+                "ok": true, "dry_run": true, "method": "download", "app": cat.id,
+                "product_version": plan.product_version, "base_version": plan.base_version,
+                "packages": plan.packages.len(), "download_bytes": plan.total_bytes,
+                "modules": plan.modules, "dependencies": dep_saps,
+                "prefix": prefix.display().to_string(),
+            }));
+        }
         return Ok(());
     }
 
-    // Download the product + each dependency component (unless staged via --source).
-    if !dry_run && source.is_none() {
-        fs::create_dir_all(&products)
-            .with_context(|| format!("creating {}", products.display()))?;
-        write_application_json(&products, &build.sap, &raw_manifest)?;
-        fetch_plan(em, &ledger, &plan, &products)?;
-        for db in &dep_builds {
-            fetch_component(em, &ledger, db, &products)?;
-        }
-    }
+    // Refuse before downloading gigabytes into a prefix that is in use (the engine checks again
+    // right before it starts).
+    crate::hdpim::refuse_if_busy(prefix)?;
 
-    // Write the DriverInfo beside the packages (EsdDirectory is relative to it).
-    let driver_xml = crate::driver::write_driver_xml(&plan, &products)?;
+    let roots = stage(em, &ledger, &plan, &raw_manifest, &dep_builds, &products, source.is_some())?;
+
+    // Write the DriverInfo beside the packages (EsdDirectory is relative to it), or with
+    // absolute paths when a component had to be staged elsewhere.
+    let driver_xml = crate::driver::write_driver_xml_roots(&plan, &products, &roots, &crate::driver::Request::default())?;
 
     // Shared HDPIM tail (same engine `offline` uses).
-    hdpim_install_and_provision(em, &cat, &driver_xml, &products, prefix, "download", dry_run)?;
+    hdpim_install_and_provision(em, &cat, &plan, &driver_xml, &products, prefix, "download", dry_run)?;
 
     // The downloaded packages are tens of GB and are never read again once installed.
     // Only OUR cache is removed — never a caller-supplied --source.
-    if source.is_none() && !keep_download {
-        if let Some(cache_dir) = products.parent() {
-            match fs::remove_dir_all(cache_dir) {
-                Ok(()) => em.note(&format!("removed the download cache {}", cache_dir.display())),
-                Err(e) => em.note(&format!("could not remove {}: {e}", cache_dir.display())),
+    if !keep_download {
+        let mut ours: Vec<PathBuf> = roots.values().filter(|r| source.is_none() || !r.starts_with(&products)).cloned().collect();
+        ours.sort();
+        ours.dedup();
+        for r in ours {
+            if let Some(cache_dir) = r.parent() {
+                match fs::remove_dir_all(cache_dir) {
+                    Ok(()) => em.note(&format!("removed the download cache {}", cache_dir.display())),
+                    Err(e) => em.note(&format!("could not remove {}: {e}", cache_dir.display())),
+                }
             }
         }
     }
     Ok(())
 }
 
+/// Make every component of `plan` present on disk and return where each one is (SAP -> the
+/// directory holding `<SAP>/`).
+///
+/// Without a staged source everything goes to `products` (our cache). With `--source`, what is
+/// already there is used, and a component that is missing or incomplete is downloaded: into the
+/// source when it is writable, else beside it in the cache.
+///
+/// 🚨 `install --source` used to resolve the dependencies from the feed, name them all in the
+/// DriverInfo, and download none of them; a source made by `mudhut download` has no dependency
+/// folders, so HDPIM was told about components that were not there (lab, 2026-10-16).
+fn stage(
+    em: &Emitter,
+    ledger: &Ledger,
+    plan: &DownloadPlan,
+    raw_manifest: &str,
+    dep_builds: &[crate::feed::Build],
+    products: &Path,
+    from_source: bool,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let mut roots = BTreeMap::new();
+    let writable = !from_source || is_writable(products);
+    let fallback = || -> Result<PathBuf> { cache_products_dir(plan) };
+
+    // The product itself.
+    let prod_root = if !from_source || writable { products.to_path_buf() } else { fallback()? };
+    let staged_already = from_source && products.join(&plan.sap).join("Application.json").is_file()
+        && missing_payloads(plan, products).is_empty();
+    if staged_already {
+        roots.insert(plan.sap.clone(), products.to_path_buf());
+    } else {
+        if from_source {
+            em.note(&format!("{} is not complete in --source; downloading it into {}", plan.sap, prod_root.display()));
+        }
+        fs::create_dir_all(&prod_root).with_context(|| format!("creating {}", prod_root.display()))?;
+        write_application_json(&prod_root, &plan.sap, raw_manifest)?;
+        fetch_packages(em, ledger, plan, &prod_root)?;
+        roots.insert(plan.sap.clone(), prod_root);
+    }
+
+    // Each dependency component.
+    for db in dep_builds {
+        let (manifest, raw) = crate::feed::fetch_manifest(em, ledger, db)?;
+        let dplan = crate::feed::plan(db, &manifest, "en_US");
+        if from_source && products.join(&db.sap).join("Application.json").is_file() && missing_payloads(&dplan, products).is_empty() {
+            roots.insert(db.sap.clone(), products.to_path_buf());
+            continue;
+        }
+        let target = if writable { products.to_path_buf() } else { fallback()? };
+        fs::create_dir_all(&target).with_context(|| format!("creating {}", target.display()))?;
+        write_application_json(&target, &db.sap, &raw)?;
+        fetch_packages(em, ledger, &dplan, &target)?;
+        roots.insert(db.sap.clone(), target);
+    }
+    Ok(roots)
+}
+
+/// The planned payload files NOT present (at their expected size) under `<products>/<SAP>/`.
+pub(crate) fn missing_payloads(plan: &DownloadPlan, products: &Path) -> Vec<String> {
+    plan.packages
+        .iter()
+        .filter_map(|p| {
+            let file = p.path.rsplit('/').next().unwrap_or(p.path.as_str());
+            let path = products.join(&p.sap).join(file);
+            match fs::metadata(&path) {
+                Ok(m) if m.len() == p.bytes || p.bytes == 0 => None,
+                _ => Some(format!("{}/{}", p.sap, file)),
+            }
+        })
+        .collect()
+}
+
+/// Whether `dir` can be written to (probe file, removed at once).
+pub(crate) fn is_writable(dir: &Path) -> bool {
+    let probe = dir.join(".mudhut-write-probe");
+    match fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// The shared install tail for the HDPIM-engine methods (`download` + `offline`):
 /// discover + run the decrypt-install engine, seed the app's UI fonts, provision
 /// the prefix, install the menu launcher, and emit the terminal `result` event.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hdpim_install_and_provision(
     em: &Emitter,
     cat: &crate::catalog::App,
+    plan: &DownloadPlan,
     driver_xml: &Path,
     products: &Path,
     prefix: &Path,
@@ -134,7 +233,12 @@ pub(crate) fn hdpim_install_and_provision(
     dry_run: bool,
 ) -> Result<()> {
     let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir(em)?, Some(prefix))?;
-    let exe = crate::hdpim::install(em, &cfg, prefix, cat, driver_xml, products, dry_run)?;
+    let expect = crate::hdpim::Expect {
+        sap: plan.sap.clone(),
+        base: plan.base_version.clone(),
+        build: Some(plan.product_version.clone()),
+    };
+    let exe = crate::hdpim::install(em, &cfg, prefix, cat, &expect, driver_xml, products, dry_run)?;
 
     if dry_run {
         return Ok(());
@@ -148,37 +252,24 @@ pub(crate) fn hdpim_install_and_provision(
     // Launchers, icons and MIME defaults are provision's (see install.rs for why Mud Hut no
     // longer writes its own `mudhut-<app>.desktop` after this call).
     crate::install::provision(prefix)?;
+    // The note BEFORE the terminal result: the result must be the last line of the stream.
+    em.note(&format!("installed: {}", exe.display()));
     if em.is_json() {
         em.result(&serde_json::json!({
             "ok": true,
             "method": method,
             "app": cat.id,
+            "version": plan.product_version,
             "prefix": prefix.display().to_string(),
             "exe": exe.display().to_string(),
             "provisioned": true,
         }));
     }
-    em.note(&format!("installed: {}", exe.display()));
-    Ok(())
-}
-
-/// Download one component (product or dependency): fetch its manifest, stage its
-/// per-SAP `Application.json`, plan, and download+verify its packages into `products`.
-fn fetch_component(
-    em: &Emitter,
-    ledger: &Ledger,
-    build: &crate::feed::Build,
-    products: &Path,
-) -> Result<()> {
-    let (manifest, raw) = crate::feed::fetch_manifest(em, ledger, build)?;
-    let plan = crate::feed::plan(build, &manifest, "en_US");
-    write_application_json(products, &build.sap, &raw)?;
-    fetch_plan(em, ledger, &plan, products)?;
     Ok(())
 }
 
 /// Stage `<products>/<SAP>/Application.json` (the raw manifest) — HDPIM's ESD layout.
-fn write_application_json(products: &Path, sap: &str, raw: &str) -> Result<()> {
+pub(crate) fn write_application_json(products: &Path, sap: &str, raw: &str) -> Result<()> {
     let dir = products.join(sap);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let p = dir.join("Application.json");
@@ -187,7 +278,7 @@ fn write_application_json(products: &Path, sap: &str, raw: &str) -> Result<()> {
 }
 
 /// Default download-cache products dir: `~/.cache/mudhut/<SAP>-<ver>-<plat>/products`.
-fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
+pub(crate) fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
@@ -206,7 +297,7 @@ fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
 /// makes the provisioned Segoe UI->Adobe Clean replacement resolve to an
 /// unregistered family -> blank menu bar. Best-effort: a copy failure never fails
 /// the install.
-fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
+pub(crate) fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
     let Some(src) = exe.parent().map(|d| d.join("Resources").join("ui-fonts")) else {
         return;
     };
@@ -231,7 +322,13 @@ fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
                 continue;
             }
             let target = dst.join(ent.file_name());
-            if !target.exists() && fs::copy(&p, &target).is_ok() {
+            // Copy when absent OR different: an update can ship a newer Adobe Clean, and the
+            // old "only when absent" rule kept the first one forever.
+            let same = match (fs::metadata(&p), fs::metadata(&target)) {
+                (Ok(a), Ok(b)) => a.len() == b.len(),
+                _ => false,
+            };
+            if !same && fs::copy(&p, &target).is_ok() {
                 n += 1;
             }
         }
@@ -307,7 +404,7 @@ pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
 ///
 /// ⛔ Never a dev-box scratch path: `$HOME/mudhut-parent-stage/packages` used to be the answer
 /// here and it exists on exactly one machine (build tester, 2026-09-04).
-fn accc_packages_dir(em: &Emitter) -> Result<PathBuf> {
+pub(crate) fn accc_packages_dir(em: &Emitter) -> Result<PathBuf> {
     if let Ok(p) = std::env::var("MUDHUT_ACCC_PACKAGES") {
         return Ok(PathBuf::from(p));
     }
@@ -454,8 +551,9 @@ struct Validation {
 
 /// Download every package in `plan` into `dest`, preserving Adobe's `Path` layout,
 /// verifying each 2 MiB segment's SHA-256 against the ValidationURL. Idempotent
-/// (size-matched files skipped).
-pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Path) -> Result<()> {
+/// (size-matched files skipped). Emits progress only: callers emit their own terminal
+/// `result` (this used to emit one per component, so an install printed several).
+pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
     let cdn = ledger.endpoints.cdn_base.trim_end_matches('/');
     let agent = ureq::builder()
@@ -523,34 +621,6 @@ pub fn fetch_plan(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Pat
     }
 
     em.progress("download", 100, "downloaded + verified");
-    if em.is_json() {
-        #[derive(serde::Serialize)]
-        struct DownloadResult<'a> {
-            ok: bool,
-            app: &'a str,
-            product_version: &'a str,
-            packages: usize,
-            total_bytes: u64,
-            verified: bool,
-            dest: String,
-        }
-        em.result(&DownloadResult {
-            ok: true,
-            app: &plan.app,
-            product_version: &plan.product_version,
-            packages: n,
-            total_bytes: total,
-            verified: true,
-            dest: dest.display().to_string(),
-        });
-    } else {
-        println!(
-            "Downloaded + verified {} package(s), {:.2} GiB into {}",
-            n,
-            total as f64 / (1u64 << 30) as f64,
-            dest.display()
-        );
-    }
     Ok(())
 }
 

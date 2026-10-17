@@ -166,8 +166,8 @@ pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
         em.result(&out);
     } else {
         match &out.source {
-            Some(s) => println!("Adobe apps in {s}:"),
-            None => println!("Installable Adobe apps:"),
+            Some(s) => outln!("Adobe apps in {s}:"),
+            None => outln!("Installable Adobe apps:"),
         }
         for r in &out.apps {
             let mark = if source.is_none() {
@@ -177,7 +177,7 @@ pub fn cmd_apps(em: &Emitter, source: Option<&Path>) -> anyhow::Result<()> {
             } else {
                 "·"
             };
-            println!("  {mark} {:<16} {:<18} [{}]", r.id, r.name, r.sap);
+            outln!("  {mark} {:<16} {:<18} [{}]", r.id, r.name, r.sap);
         }
     }
     Ok(())

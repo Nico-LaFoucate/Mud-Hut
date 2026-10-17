@@ -151,13 +151,13 @@ pub fn cmd_ledger(em: &Emitter) -> Result<()> {
         }
         em.result(&Out { origin: &l.origin, ledger: &l });
     } else {
-        println!("Ledger (schema {}, updated {}) — {}", l.schema, l.updated, l.origin);
-        println!("  products_feed: {}", l.endpoints.products_feed);
-        println!("  manifest:      {}", l.endpoints.application_manifest);
-        println!("  platform:      {}", l.default_platform);
-        println!("  {} app(s):", l.apps.len());
+        outln!("Ledger (schema {}, updated {}) — {}", l.schema, l.updated, l.origin);
+        outln!("  products_feed: {}", l.endpoints.products_feed);
+        outln!("  manifest:      {}", l.endpoints.application_manifest);
+        outln!("  platform:      {}", l.default_platform);
+        outln!("  {} app(s):", l.apps.len());
         for (id, a) in &l.apps {
-            println!("    {:<14} [{}] {}", id, a.sap, l.platform_for(a));
+            outln!("    {:<14} [{}] {}", id, a.sap, l.platform_for(a));
         }
     }
     Ok(())

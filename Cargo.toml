@@ -28,6 +28,9 @@ md-5 = "0.10"
 # PR_SET_PDEATHSIG only: tie the installer host's lifetime to ours so killing
 # Mud Hut can never leave a decrypt running against a half-installed prefix.
 libc = "0.2"
+# Adobe's own install record, caps/hdpim.db, read-only (`immutable=1`). `bundled` compiles SQLite
+# in, so no system libsqlite is needed on any distro.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 [profile.release]
 strip = true

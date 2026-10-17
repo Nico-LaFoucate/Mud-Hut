@@ -57,6 +57,50 @@ pub struct Manifest {
     /// so a schema tweak never breaks the parse. Read by [`plan`].
     #[serde(rename = "Dependencies", default)]
     pub dependencies: serde_json::Value,
+    /// `Modules.Module[]`: optional parts of the app (`Id`, `DisplayName`, `DeploymentType`
+    /// OnDemand/Deferred, `ReferencePackages.ReferencePackage[]`). Kept raw, like Dependencies.
+    #[serde(rename = "Modules", default)]
+    pub modules: serde_json::Value,
+}
+
+/// One optional module of an app, from the manifest.
+#[derive(Debug, Clone, Serialize)]
+pub struct Module {
+    pub id: String,
+    pub display_name: String,
+    pub deployment: String,
+    pub packages: Vec<String>,
+}
+
+impl Module {
+    /// Adobe's speech-to-text language packs (Premiere Pro and Media Encoder ship 16 of them,
+    /// about 850 MB each). Identified by Adobe's own module label, "Speech to Text Language Pack
+    /// (<language>)", and its `<SAP>-esl_lp_<lang>` id.
+    pub fn is_speech_pack(&self) -> bool {
+        self.display_name.starts_with("Speech to Text") || self.id.contains("-esl_lp_")
+    }
+}
+
+impl Manifest {
+    pub fn module_list(&self) -> Vec<Module> {
+        let arr = self.modules.get("Module").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+        arr.iter()
+            .filter_map(|m| {
+                let refs = m.get("ReferencePackages").and_then(|r| r.get("ReferencePackage"));
+                let packages = match refs {
+                    Some(serde_json::Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+                    Some(serde_json::Value::String(s)) => vec![s.clone()],
+                    _ => vec![],
+                };
+                Some(Module {
+                    id: m.get("Id")?.as_str()?.to_string(),
+                    display_name: m.get("DisplayName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    deployment: m.get("DeploymentType").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    packages,
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -84,6 +128,25 @@ pub struct Package {
     /// e.g. `[installLanguage]==en_US`; empty = required for every install.
     #[serde(rename = "Condition", default)]
     pub condition: String,
+    /// The package's own version. Unchanged packages keep theirs across releases, so an
+    /// update only needs the packages whose version differs from what hdpim.db records.
+    #[serde(rename = "PackageVersion", default)]
+    pub version: String,
+    /// Binary deltas from the one or two previous package versions.
+    #[serde(rename = "DeltaPackages", default)]
+    pub deltas: Vec<DeltaPackage>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeltaPackage {
+    #[serde(rename = "PackageName", default)]
+    pub name: String,
+    #[serde(rename = "BasePackageVersion", default)]
+    pub base_version: String,
+    #[serde(rename = "DownloadSize", default)]
+    pub download_size: u64,
+    #[serde(rename = "Path", default)]
+    pub path: String,
 }
 
 /// The packages we'll actually fetch for a given language, and the total bytes.
@@ -104,6 +167,28 @@ pub struct DownloadPlan {
     /// generated driver.xml. `install --method download` resolves them from the product
     /// feed ([`resolve_dependencies`]) and downloads them; `mudhut download` does not.
     pub dependencies: Vec<Dependency>,
+    /// The modules to install, named in the DriverInfo's `<Modules>`. Empty when every module
+    /// of the app is planned: the DriverInfo then carries no `<Modules>`, exactly as before.
+    pub modules: Vec<String>,
+    /// Modules left out (the speech-to-text packs unless asked for).
+    pub skipped_modules: Vec<String>,
+    /// Bytes the skipped modules would have added.
+    pub skipped_bytes: u64,
+}
+
+/// Choices that shape a plan beyond the language.
+#[derive(Debug, Clone, Default)]
+pub struct PlanOpts {
+    /// Install the highest build of this major (e.g. 28 for Photoshop 2027) instead of the
+    /// newest build in the feed.
+    pub major: Option<u64>,
+    /// Include the speech-to-text language packs (default off, as in Creative Cloud).
+    pub speech_packs: bool,
+    /// Modules that are installed already and must stay (an update keeps what the user has).
+    pub keep_modules: Vec<String>,
+    /// Exactly these modules (an update of a recorded install: the modules Adobe's record lists,
+    /// as Creative Cloud updates what is installed and nothing more). Overrides the rest.
+    pub only_modules: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,11 +197,15 @@ pub struct Dependency {
     pub base_version: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PlannedPackage {
     /// Which component (SAP) this package belongs to — the per-SAP install dir.
     pub sap: String,
     pub name: String,
+    /// Adobe's PackageVersion.
+    pub version: String,
+    /// The module this package belongs to, if any.
+    pub module: Option<String>,
     pub kind: String,
     pub bytes: u64,
     pub path: String,
@@ -132,51 +221,78 @@ pub struct PlannedPackage {
 /// component the app's manifest lists.
 pub const MINIMAL_SKIP_DEPS: &[&str] = &["CCXP", "ACR", "COSY"];
 
-/// Find the highest-versioned `<product id=sap>` that has a `<languageSet>` for
-/// `platform`, returning (build_guid, product_version, feed_version).
-fn resolve_from_doc(
-    doc: &roxmltree::Document,
-    sap: &str,
-    platform: &str,
-) -> Option<(String, String, String)> {
-    let mut best: Option<(Vec<u32>, roxmltree::Node)> = None;
+/// One build of a product in Adobe's feed (the feed lists every build of the current and the
+/// previous major, each with its own base version and build GUID).
+#[derive(Debug, Clone, Serialize)]
+pub struct Candidate {
+    pub sap: String,
+    /// `<product version>`: the codex version, "27.11".
+    pub feed_version: String,
+    /// `<languageSet productVersion>`: the build, "27.11.0.26".
+    pub product_version: String,
+    /// `<languageSet baseVersion>`: Adobe's identity of the product line, "27.0".
+    pub base_version: Option<String>,
+    pub build_guid: String,
+    pub platform: String,
+}
+
+impl Candidate {
+    pub fn base(&self) -> String {
+        self.base_version.clone().unwrap_or_else(|| format!("{}.0", crate::version::major(&self.product_version)))
+    }
+    pub fn to_build(&self, app_id: &str) -> Build {
+        Build {
+            app_id: app_id.to_string(),
+            sap: self.sap.clone(),
+            feed_version: self.feed_version.clone(),
+            product_version: self.product_version.clone(),
+            platform: self.platform.clone(),
+            build_guid: self.build_guid.clone(),
+        }
+    }
+}
+
+/// Every `<product id=sap>` build that has a `<languageSet>` for `platform`, newest first.
+pub fn candidates_from_doc(doc: &roxmltree::Document, sap: &str, platform: &str) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
     for product in doc.descendants().filter(|n| n.has_tag_name("product")) {
         if product.attribute("id") != Some(sap) {
             continue;
         }
-        // must actually have a build for this platform
-        let has = product
+        let Some(langset) = product
             .descendants()
             .filter(|n| n.has_tag_name("platform"))
-            .any(|p| {
-                p.attribute("id") == Some(platform)
-                    && p.descendants().any(|n| n.has_tag_name("languageSet"))
-            });
-        if !has {
+            .find(|p| p.attribute("id") == Some(platform))
+            .and_then(|p| p.descendants().find(|n| n.has_tag_name("languageSet")))
+        else {
             continue;
+        };
+        let Some(guid) = langset.attribute("buildGuid") else { continue };
+        if out.iter().any(|c| c.build_guid == guid) {
+            continue; // the same build listed under two channels
         }
-        let key = version_key(product.attribute("version").unwrap_or("0"));
-        if best.as_ref().map(|(b, _)| key > *b).unwrap_or(true) {
-            best = Some((key, product));
-        }
+        let feed_version = product.attribute("version").unwrap_or_default().to_string();
+        out.push(Candidate {
+            sap: sap.to_string(),
+            product_version: langset.attribute("productVersion").unwrap_or(&feed_version).to_string(),
+            feed_version,
+            base_version: langset.attribute("baseVersion").map(str::to_string),
+            build_guid: guid.to_string(),
+            platform: platform.to_string(),
+        });
     }
-    let (_, product) = best?;
-    let feed_version = product.attribute("version").unwrap_or_default().to_string();
-    let langset = product
-        .descendants()
-        .filter(|n| n.has_tag_name("platform"))
-        .find(|p| p.attribute("id") == Some(platform))
-        .and_then(|p| p.descendants().find(|n| n.has_tag_name("languageSet")))?;
-    let build_guid = langset.attribute("buildGuid")?.to_string();
-    let product_version = langset
-        .attribute("productVersion")
-        .unwrap_or(&feed_version)
-        .to_string();
-    Some((build_guid, product_version, feed_version))
+    out.sort_by(|a, b| crate::version::cmp(&b.product_version, &a.product_version));
+    out
 }
 
 /// Resolve the latest build for `app_id` from the live product feed.
 pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Build> {
+    resolve_build_version(em, ledger, app_id, None)
+}
+
+/// Resolve the newest build for `app_id`, or with `major`, the newest build of that major
+/// (`install --version 28` = Photoshop 2027 beside 2026).
+pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major: Option<u64>) -> Result<Build> {
     let app = ledger
         .app(app_id)
         .with_context(|| format!("unknown app id '{app_id}' (see `mudhut ledger`)"))?;
@@ -188,17 +304,25 @@ pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Buil
         .with_context(|| format!("fetching product feed {url}"))?;
     let doc = roxmltree::Document::parse(&xml).context("parsing product feed XML")?;
 
-    let (build_guid, product_version, feed_version) = resolve_from_doc(&doc, &app.sap, &platform)
-        .with_context(|| format!("app {} ({}) not found in the product feed", app.name, app.sap))?;
-
-    Ok(Build {
-        app_id: app_id.to_string(),
-        sap: app.sap.clone(),
-        feed_version,
-        product_version,
-        platform,
-        build_guid,
-    })
+    let all = candidates_from_doc(&doc, &app.sap, &platform);
+    let pick = match major {
+        None => all.first().cloned(),
+        Some(m) => all.iter().find(|c| crate::version::major(&c.product_version) == m).cloned(),
+    };
+    let c = match (pick, major) {
+        (Some(c), _) => c,
+        (None, None) => bail!("app {} ({}) not found in the product feed", app.name, app.sap),
+        (None, Some(m)) => {
+            let mut majors: Vec<u64> = all.iter().map(|c| crate::version::major(&c.product_version)).collect();
+            majors.dedup();
+            bail!(
+                "Adobe does not offer {} version {m}. Versions offered: {}",
+                app.name,
+                majors.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+            )
+        }
+    };
+    Ok(c.to_build(app_id))
 }
 
 /// Resolve the downloadable dependency components for `deps` from the product feed.
@@ -229,17 +353,17 @@ pub fn resolve_dependencies(
     for dep in wanted {
         let mut resolved = None;
         for platform in ["win64", "win32"] {
-            if let Some((build_guid, product_version, feed_version)) =
-                resolve_from_doc(&doc, &dep.sap, platform)
-            {
-                resolved = Some(Build {
-                    app_id: dep.sap.to_lowercase(),
-                    sap: dep.sap.clone(),
-                    feed_version,
-                    product_version,
-                    platform: platform.to_string(),
-                    build_guid,
-                });
+            // The manifest names each dependency by (SAP code, base version), which is how
+            // Adobe's own engine matches them ("No matching STI found in FFC for Product
+            // (sapcode %s, baseversion %s)"). Prefer the newest build of THAT base; fall back to
+            // the newest build at all, which is what this always did and still the only
+            // answer when the base is not in the feed.
+            let all = candidates_from_doc(&doc, &dep.sap, platform);
+            let same_base = all.iter().find(|c| {
+                !dep.base_version.is_empty() && crate::version::eq(&c.base(), &dep.base_version)
+            });
+            if let Some(c) = same_base.or(all.first()) {
+                resolved = Some(c.to_build(&dep.sap.to_lowercase()));
                 break;
             }
         }
@@ -273,20 +397,46 @@ pub fn fetch_manifest(em: &Emitter, ledger: &Ledger, build: &Build) -> Result<(M
     Ok((manifest, body))
 }
 
-/// Compute the download plan for `language` (BCP-ish, e.g. `en_US`). Includes
-/// unconditional (core) packages + those whose Condition matches the language;
-/// non-language conditions (OS, etc.) are assumed applicable for the platform.
+/// Compute the download plan for `language` (BCP-ish, e.g. `en_US`) with the default choices.
 pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan {
+    plan_with(build, manifest, language, &PlanOpts::default())
+}
+
+/// Compute the download plan. Includes unconditional (core) packages + those whose Condition
+/// matches the language and machine, and every module except the speech-to-text language packs
+/// (unless `opts.speech_packs`, or the module is in `opts.keep_modules`).
+///
+/// ⭐ Speech packs default OFF (operator decision, 2026-10-16): Creative Cloud does not install
+/// them by default (a Windows-installed Premiere 26.3 has none of the 16), and planning every
+/// module made a default Premiere install about 13.8 GB larger, repeated by every update.
+pub fn plan_with(build: &Build, manifest: &Manifest, language: &str, opts: &PlanOpts) -> DownloadPlan {
+    let modules = manifest.module_list();
+    let module_of = |pkg: &str| modules.iter().find(|m| m.packages.iter().any(|p| p == pkg));
+    let wanted = |m: &Module| match &opts.only_modules {
+        Some(only) => only.iter().any(|k| k == &m.id),
+        None => !m.is_speech_pack() || opts.speech_packs || opts.keep_modules.iter().any(|k| k == &m.id),
+    };
+
     let mut packages = Vec::new();
     let mut total_bytes = 0u64;
+    let mut skipped_bytes = 0u64;
     for p in &manifest.packages.package {
         if !condition_matches(&p.condition, language) {
             continue;
+        }
+        let module = module_of(&p.name);
+        if let Some(m) = module {
+            if !wanted(m) {
+                skipped_bytes += p.download_size;
+                continue;
+            }
         }
         total_bytes += p.download_size;
         packages.push(PlannedPackage {
             sap: build.sap.clone(),
             name: p.name.clone(),
+            version: p.version.clone(),
+            module: module.map(|m| m.id.clone()),
             kind: p.kind.clone(),
             bytes: p.download_size,
             path: p.path.clone(),
@@ -294,6 +444,15 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
             validation_url: p.validation_url.clone(),
         });
     }
+    let skipped: Vec<String> = modules.iter().filter(|m| !wanted(m)).map(|m| m.id.clone()).collect();
+    // Name the modules only when some are left out; otherwise keep the DriverInfo exactly as
+    // every install so far has had it (no <Modules>).
+    let selected: Vec<String> = if skipped.is_empty() {
+        vec![]
+    } else {
+        modules.iter().filter(|m| wanted(m)).map(|m| m.id.clone()).collect()
+    };
+
     let dependencies = manifest
         .dependencies
         .get("Dependency")
@@ -336,6 +495,9 @@ pub fn plan(build: &Build, manifest: &Manifest, language: &str) -> DownloadPlan 
         packages,
         total_bytes,
         dependencies,
+        modules: selected,
+        skipped_modules: skipped,
+        skipped_bytes,
     }
 }
 
@@ -353,7 +515,7 @@ pub fn cmd_download(
 ) -> Result<()> {
     let ledger = Ledger::load(em)?;
     let build = resolve_build(em, &ledger, app_id)?;
-    let (manifest, _raw) = fetch_manifest(em, &ledger, &build)?;
+    let (manifest, raw) = fetch_manifest(em, &ledger, &build)?;
     let mut plan = plan(&build, &manifest, language);
 
     if core_only {
@@ -387,20 +549,38 @@ pub fn cmd_download(
             if !em.is_json() {
                 print_plan_human(&plan);
             }
-            crate::download::fetch_plan(em, &ledger, &plan, dest)?;
+            crate::download::fetch_packages(em, &ledger, &plan, dest)?;
+            // HDPIM's ESD layout needs the manifest beside the payloads: without
+            // `<SAP>/Application.json` a later `install --source <dest>` failed with HDPIM
+            // error 107 ("Could not find 'Application.json' file inside ESD directory").
+            crate::download::write_application_json(dest, &plan.sap, &raw)?;
             let driver = crate::driver::write_driver_xml(&plan, dest)?;
             em.note(&format!("wrote install descriptor {}", driver.display()));
+            if em.is_json() {
+                em.result(&serde_json::json!({
+                    "ok": true, "app": plan.app, "product_version": plan.product_version,
+                    "packages": plan.packages.len(), "total_bytes": plan.total_bytes,
+                    "verified": true, "dest": dest.display().to_string(),
+                }));
+            } else {
+                outln!(
+                    "Downloaded + verified {} package(s), {:.2} GiB into {}",
+                    plan.packages.len(),
+                    plan.total_bytes as f64 / (1u64 << 30) as f64,
+                    dest.display()
+                );
+            }
         }
     }
     Ok(())
 }
 
 fn print_plan_human(plan: &DownloadPlan) {
-    println!(
+    outln!(
         "{} {} ({}) — build {}",
         plan.app, plan.product_version, plan.language, plan.build_guid
     );
-    println!(
+    outln!(
         "  {} package(s), {:.2} GiB{}:",
         plan.packages.len(),
         plan.total_bytes as f64 / (1u64 << 30) as f64,
@@ -411,7 +591,7 @@ fn print_plan_human(plan: &DownloadPlan) {
         }
     );
     for p in &plan.packages {
-        println!(
+        outln!(
             "    {:>8.1} MiB  [{}]  {}",
             p.bytes as f64 / (1u64 << 20) as f64,
             p.kind,
@@ -496,11 +676,6 @@ fn condition_matches(cond: &str, lang: &str) -> bool {
     })
 }
 
-/// Split a dotted version ("27.8" / "27.8.0.13") into a comparable component vec.
-fn version_key(v: &str) -> Vec<u32> {
-    v.split('.').map(|c| c.parse::<u32>().unwrap_or(0)).collect()
-}
-
 fn http_get_text(
     url: &str,
     headers: &BTreeMap<String, String>,
@@ -515,7 +690,7 @@ fn http_get_text(
     }
     // NB: ureq's `into_string()` caps at 10 MiB; the product feed is larger, so
     // read the raw reader with no cap.
-    crate::net::retry(url, |m| eprintln!("  {m}"), || {
+    crate::net::retry(url, |m| errln!("  {m}"), || {
         let resp = req.clone().call().with_context(|| format!("GET {url}"))?;
         let mut body = String::new();
         resp.into_reader()
@@ -523,6 +698,81 @@ fn http_get_text(
             .context("reading response body")?;
         Ok(body)
     })
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    /// A trimmed Premiere-shaped manifest: core, one Deferred module, two speech packs
+    /// (one OnDemand, the English one Deferred), and an OnDemand codec module.
+    fn ppro() -> Manifest {
+        serde_json::from_str(r#"{
+          "Name":"Premiere Pro","SAPCode":"PPRO","ProductVersion":"26.5.2.5","BaseVersion":"26.0",
+          "Packages":{"Package":[
+            {"Type":"core","PackageName":"AdobePremierePro26AllTrial","DownloadSize":2000,"Path":"/a/core.zip","PackageVersion":"26.5.2.5",
+             "DeltaPackages":[{"PackageName":"core_delta","BasePackageVersion":"26.5.1.1","DownloadSize":100,"Path":"/a/d.zip"}]},
+            {"Type":"non-core","PackageName":"AdobePremierePro26AllTrial-esl_lp_de","DownloadSize":800,"Path":"/a/de.zip","PackageVersion":"26.5.0.99"},
+            {"Type":"non-core","PackageName":"AdobePremierePro26AllTrial-esl_lp_en","DownloadSize":800,"Path":"/a/en.zip","PackageVersion":"26.5.0.99"},
+            {"Type":"non-core","PackageName":"AdobePremierePro26AllTrial-ObjectMask","DownloadSize":600,"Path":"/a/om.zip","PackageVersion":"26.5.0.99"},
+            {"Type":"non-core","PackageName":"AdobePremierePro26AllTrial-OptionalHEVCCodec","DownloadSize":17,"Path":"/a/hevc.zip","PackageVersion":"26.3.0.93"}
+          ]},
+          "Modules":{"Module":[
+            {"Id":"PPRO-esl_lp_de","DisplayName":"Speech to Text Language Pack (German)","DeploymentType":"OnDemand","ReferencePackages":{"ReferencePackage":["AdobePremierePro26AllTrial-esl_lp_de"]}},
+            {"Id":"PPRO-esl_lp_en","DisplayName":"Speech to Text Language Pack (English)","DeploymentType":"Deferred","ReferencePackages":{"ReferencePackage":["AdobePremierePro26AllTrial-esl_lp_en"]}},
+            {"Id":"PPRO-ObjectMask","DisplayName":"Object Mask","DeploymentType":"Deferred","ReferencePackages":{"ReferencePackage":["AdobePremierePro26AllTrial-ObjectMask"]}},
+            {"Id":"PPRO-OptionalHEVCCodec","DisplayName":"Optional HEVC codec","DeploymentType":"OnDemand","ReferencePackages":{"ReferencePackage":["AdobePremierePro26AllTrial-OptionalHEVCCodec"]}}
+          ]},
+          "Dependencies":{"Dependency":[{"SAPCode":"CCXP","BaseVersion":"2.2.1"}]}
+        }"#).unwrap()
+    }
+
+    fn build() -> Build {
+        Build { app_id: "premiere".into(), sap: "PPRO".into(), feed_version: "26.5.2".into(),
+                product_version: "26.5.2.5".into(), platform: "win64".into(), build_guid: "g".into() }
+    }
+
+    #[test]
+    fn speech_packs_are_off_by_default_and_named_out_of_the_request() {
+        let p = plan(&build(), &ppro(), "en_US");
+        let names: Vec<&str> = p.packages.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["AdobePremierePro26AllTrial", "AdobePremierePro26AllTrial-ObjectMask", "AdobePremierePro26AllTrial-OptionalHEVCCodec"]);
+        assert_eq!(p.skipped_modules, vec!["PPRO-esl_lp_de", "PPRO-esl_lp_en"]);
+        assert_eq!(p.skipped_bytes, 1600);
+        assert_eq!(p.modules, vec!["PPRO-ObjectMask", "PPRO-OptionalHEVCCodec"], "the request names what IS installed");
+        assert_eq!(p.packages[0].version, "26.5.2.5");
+    }
+
+    #[test]
+    fn speech_packs_opt_in_or_kept_when_installed() {
+        let all = plan_with(&build(), &ppro(), "en_US", &PlanOpts { speech_packs: true, ..Default::default() });
+        assert_eq!(all.packages.len(), 5);
+        assert!(all.modules.is_empty(), "nothing left out -> no <Modules>, as before");
+        let kept = plan_with(&build(), &ppro(), "en_US", &PlanOpts { keep_modules: vec!["PPRO-esl_lp_de".into()], ..Default::default() });
+        assert!(kept.packages.iter().any(|x| x.name.ends_with("esl_lp_de")));
+        assert!(!kept.packages.iter().any(|x| x.name.ends_with("esl_lp_en")));
+        // An update keeps exactly the recorded modules (Windows installed HEVC but no Object Mask).
+        let upd = plan_with(&build(), &ppro(), "en_US", &PlanOpts { only_modules: Some(vec!["PPRO-OptionalHEVCCodec".into()]), ..Default::default() });
+        let names: Vec<&str> = upd.packages.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["AdobePremierePro26AllTrial", "AdobePremierePro26AllTrial-OptionalHEVCCodec"]);
+        assert_eq!(upd.modules, vec!["PPRO-OptionalHEVCCodec"]);
+    }
+
+    #[test]
+    fn candidates_are_every_build_newest_first_with_base() {
+        let xml = r#"<products>
+          <product id="PHSP" version="27.10"><platforms><platform id="win64"><languageSet buildGuid="g10" productVersion="27.10.0.26" baseVersion="27.0"/></platform></platforms></product>
+          <product id="PHSP" version="27.9.1"><platforms><platform id="win64"><languageSet buildGuid="g91" productVersion="27.9.1.1" baseVersion="27.0"/></platform></platforms></product>
+          <product id="PHSP" version="26.11.8"><platforms><platform id="win64"><languageSet buildGuid="g26" productVersion="26.11.8.318" baseVersion="26.0"/></platform></platforms></product>
+          <product id="PHSP" version="27.10"><platforms><platform id="win64"><languageSet buildGuid="g10" productVersion="27.10.0.26" baseVersion="27.0"/></platform></platforms></product>
+          <product id="PHSP" version="28.0"><platforms><platform id="macarm64"><languageSet buildGuid="m" productVersion="28.0.0.1" baseVersion="28.0"/></platform></platforms></product>
+        </products>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let c = candidates_from_doc(&doc, "PHSP", "win64");
+        let v: Vec<&str> = c.iter().map(|x| x.product_version.as_str()).collect();
+        assert_eq!(v, vec!["27.10.0.26", "27.9.1.1", "26.11.8.318"], "deduped by GUID, numeric order, platform-filtered");
+        assert_eq!(c[2].base(), "26.0");
+    }
 }
 
 #[cfg(test)]

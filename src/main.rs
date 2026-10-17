@@ -11,19 +11,24 @@
 //! drives this CLI exactly like it drives `neutron`: `mudhut --json <cmd>` streams newline-delimited JSON events, the
 //! last of which is the terminal `result`/`error`.
 
+#[macro_use]
+mod output;
+mod busy;
 mod catalog;
 mod doctor;
 mod download;
 mod driver;
+mod failure;
 mod feed;
 mod hdpim;
+mod hdpimdb;
 mod install;
 mod ledger;
 mod iso;
 mod net;
 mod offline;
-mod output;
 mod source;
+mod version;
 mod windows;
 
 use std::path::PathBuf;
@@ -134,6 +139,17 @@ struct InstallArgs {
     /// (default: delete them; they can be tens of GB).
     #[arg(long)]
     keep_download: bool,
+
+    /// `--method download`: install the newest build of this major version (e.g. `28` for
+    /// Photoshop 2027) instead of the newest build Adobe offers. A new yearly version installs
+    /// beside the old one.
+    #[arg(long, value_name = "MAJOR")]
+    version: Option<u64>,
+
+    /// Also install the speech-to-text language packs (Premiere Pro and Media Encoder; about
+    /// 13.8 GB). Off by default, as in Creative Cloud.
+    #[arg(long)]
+    speech_packs: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -165,8 +181,9 @@ fn main() -> ExitCode {
         Cmd::Install(a) => ensure_prefix_dir(&a.prefix, a.dry_run).and_then(|()| match a.method {
             // download has its own decrypt-install engine (HDPIM), not copy-staging.
             Method::Download => {
+                let opts = feed::PlanOpts { major: a.version, speech_packs: a.speech_packs, ..Default::default() };
                 download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run,
-                                  a.minimal, a.keep_download)
+                                  a.minimal, a.keep_download, &opts)
             }
             // windows: acquire (copy discovery) -> stage + provision (shared).
             Method::Windows => windows::acquire(a.source.as_deref(), a.app.as_deref(), a.suite)
@@ -191,8 +208,16 @@ fn main() -> ExitCode {
             // not just the outermost context. Without it the actual reason — the
             // OS error, wine's own complaint — is dropped, and Collider shows the
             // user a message with nothing actionable in it.
-            em.error(&format!("{e:#}"));
-            ExitCode::FAILURE
+            match failure::find(&e) {
+                Some(f) => {
+                    em.error_with(&format!("{e:#}"), &f.event_fields());
+                    ExitCode::from(f.exit)
+                }
+                None => {
+                    em.error_with(&format!("{e:#}"), &serde_json::Map::new());
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }

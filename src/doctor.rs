@@ -108,13 +108,13 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
     if em.is_json() {
         em.result(&report);
     } else {
-        println!("Host readiness: {}", if ready { "READY" } else { "NOT READY" });
+        outln!("Host readiness: {}", if ready { "READY" } else { "NOT READY" });
         // Which build is this? Printed here so a stale install is visible without
         // having to compare timestamps by hand.
-        println!("  mudhut {} build {}", env!("CARGO_PKG_VERSION"), env!("MUDHUT_BUILD"));
+        outln!("  mudhut {} build {}", env!("CARGO_PKG_VERSION"), env!("MUDHUT_BUILD"));
         for c in &report.checks {
             let mark = if c.ok { "✓" } else if c.required { "✗" } else { "!" };
-            println!("  {mark} {:<9} {}", c.name, c.detail);
+            outln!("  {mark} {:<9} {}", c.name, c.detail);
         }
     }
     Ok(())

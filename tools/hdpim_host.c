@@ -1,6 +1,7 @@
 /*
  * hdpim_host.c  -- Minimal 32-bit orchestrator that drives Adobe's own
- * HDPIM.dll -> hdpimInstallProduct to install a staged ESD package offline.
+ * HDPIM.dll -> hdpimInstallProduct / hdpimInstallUpdate / hdpimUnInstallProduct
+ * to install, update or remove a product from a staged ESD package offline.
  *
  * This is orchestration only: it LoadLibrary's Adobe's shipped HDPIM.dll and
  * calls its exported install API exactly the way Adobe's Set-up.exe does.
@@ -8,11 +9,15 @@
  *
  * Build (32-bit PE, HDPIM.dll is PE32), from tools/ -- see BUILD_hdpim_host.md:
  *   i686-w64-mingw32-windres host.rc -O coff -o host_res.o
- *   i686-w64-mingw32-gcc -O2 -o hdpim_host.exe hdpim_host.c host_res.o -lole32
+ *   i686-w64-mingw32-gcc -O2 -s -o hdpim_host.exe hdpim_host.c host_res.o -lole32
  *
  * Usage:
- *   hdpim_host.exe <HDPIM.dll path> <Driver.xml path> [wait_seconds]
+ *   hdpim_host.exe <HDPIM.dll path> <Driver.xml path> [wait_seconds] [install|update|uninstall]
  *   CWD is set to the Driver.xml directory so EsdDirectory "./PHSP" resolves.
+ *   The verb picks the export (default install). All three take the same arguments
+ *   (HDPIM 6.5.0.348 decompile: hdpimInstallProduct / hdpimInstallUpdate /
+ *   hdpimUnInstallProduct, workflow types 0 / 1 / 2) and run asynchronously; the
+ *   caller watches HDPIM's log for "All N tasks completed." or its workflow error.
  *
  * Signatures of the HDPIM.dll exports used here:
  *   __cdecl void  logfn(int level, const char* module, const char* category,
@@ -23,6 +28,7 @@
  *   __cdecl int   hdpimInstallProduct(const char* sessionId,
  *                       const char* driverInfoXml, void* a3);
  *                 // all three args required non-NULL; returns 0 fast (async)
+ *   __cdecl int   hdpimInstallUpdate / hdpimUnInstallProduct: same as install.
  *   __cdecl int   hdpimTerminateSession(const char* sessionId);
  */
 
@@ -39,15 +45,13 @@ typedef int  (__cdecl *createsession_t)(wchar_t**, logfn_t, void*);
 typedef int  (__cdecl *install_t)(const wchar_t*, const wchar_t*, void*);
 typedef int  (__cdecl *terminate_t)(const wchar_t*);
 
-static FILE* g_log;
-
+/* stderr only: Mud Hut captures it to a per-run file. (This used to also write a fixed
+ * Z:\tmp\hdpim_host.log, which two installs into two prefixes shared.) */
 static void logline(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fprintf(stderr, "\n"); fflush(stderr);
-    if (g_log) { va_start(ap, fmt); vfprintf(g_log, fmt, ap); va_end(ap);
-                 fprintf(g_log, "\n"); fflush(g_log); }
 }
 
 /* HDPIM's log callback. __cdecl + variadic; args are WIDE (UTF-16LE):
@@ -64,11 +68,6 @@ static void __cdecl my_logger(int level, const wchar_t* a, const wchar_t* b,
     fprintf(stderr, "  HDPIM[%d] %ls|%ls :: %ls\n",
             level, a ? a : L"", b ? b : L"", wbuf);
     fflush(stderr);
-    if (g_log) {
-        fprintf(g_log, "  HDPIM[%d] %ls|%ls :: %ls\n",
-                level, a ? a : L"", b ? b : L"", wbuf);
-        fflush(g_log);
-    }
 }
 
 /* arg3 of hdpimInstallProduct is a CALLBACK FUNCTION POINTER (HDPIM does
@@ -117,14 +116,21 @@ static void pump_for(int seconds) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <HDPIM.dll> <Driver.xml> [wait_seconds]\n", argv[0]);
+        fprintf(stderr, "usage: %s <HDPIM.dll> <Driver.xml> [wait_seconds] [install|update|uninstall]\n", argv[0]);
         return 2;
     }
     const char* hdpim_path = argv[1];
     const char* driver_path = argv[2];
     int wait_secs = (argc >= 4) ? atoi(argv[3]) : 2400;
-
-    g_log = fopen("Z:\\tmp\\hdpim_host.log", "w");
+    const char* verb = (argc >= 5) ? argv[4] : "install";
+    const char* export_name =
+        !strcmp(verb, "install")   ? "hdpimInstallProduct" :
+        !strcmp(verb, "update")    ? "hdpimInstallUpdate" :
+        !strcmp(verb, "uninstall") ? "hdpimUnInstallProduct" : NULL;
+    if (!export_name) {
+        fprintf(stderr, "[host] unknown verb '%s' (install|update|uninstall)\n", verb);
+        return 2;
+    }
 
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
@@ -153,10 +159,10 @@ int main(int argc, char** argv) {
 
     setlogger_t   pSetLogger = (setlogger_t)   GetProcAddress(h, "hdpimSetLoggerFnPtr");
     createsession_t pCreate  = (createsession_t)GetProcAddress(h, "hdpimCreateSession");
-    install_t     pInstall   = (install_t)     GetProcAddress(h, "hdpimInstallProduct");
+    install_t     pInstall   = (install_t)     GetProcAddress(h, export_name);
     terminate_t   pTerm      = (terminate_t)   GetProcAddress(h, "hdpimTerminateSession");
-    logline("[host] exports: setlogger=%p create=%p install=%p term=%p",
-            pSetLogger, pCreate, pInstall, pTerm);
+    logline("[host] exports: setlogger=%p create=%p %s=%p term=%p",
+            pSetLogger, pCreate, export_name, pInstall, pTerm);
     if (!pSetLogger || !pCreate || !pInstall || !pTerm) {
         logline("[host] missing export"); return 4;
     }
@@ -182,9 +188,9 @@ int main(int argc, char** argv) {
     void* a3 = (void*)progress_cb;
     logline("[host] ptrs: sid=%p wxml=%p a3(cb)=%p", (void*)sid, (void*)wxml, a3);
 
-    logline("[host] calling hdpimInstallProduct(wide) ...");
+    logline("[host] calling %s(wide) ...", export_name);
     r = pInstall(sid, wxml, a3);
-    logline("[host] hdpimInstallProduct -> %d (async; now waiting)", r);
+    logline("[host] %s -> %d (async; now waiting)", export_name, r);
 
     pump_for(wait_secs);
 

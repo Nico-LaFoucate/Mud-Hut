@@ -151,10 +151,10 @@ fn finish(em: &Emitter, r: InstallResult) -> Result<()> {
     if em.is_json() {
         em.result(&r);
     } else if r.dry_run {
-        println!("Dry run: {} app(s), {:.1} GiB planned into {}",
+        outln!("Dry run: {} app(s), {:.1} GiB planned into {}",
             r.apps.len(), r.total_bytes as f64 / (1u64 << 30) as f64, r.prefix);
     } else {
-        println!("Installed {} into {} ({}).",
+        outln!("Installed {} into {} ({}).",
             r.apps.join(", "), r.prefix,
             if r.provisioned { "provisioned" } else { "NOT provisioned" });
     }

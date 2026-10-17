@@ -4,7 +4,7 @@ A 32-bit PE (HDPIM.dll is PE32). Built with mingw-w64:
 
 ```
 i686-w64-mingw32-windres host.rc -O coff -o host_res.o
-i686-w64-mingw32-gcc -O2 -o hdpim_host.exe hdpim_host.c host_res.o -lole32
+i686-w64-mingw32-gcc -O2 -s -o hdpim_host.exe hdpim_host.c host_res.o -lole32
 ```
 
 `host.rc` embeds `host.manifest` (RT_MANIFEST) — the Win10/11 `supportedOS` GUID is

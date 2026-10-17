@@ -150,7 +150,7 @@ fn parse_runtime_version(dir_name: &str) -> Option<(u32, u32, u32)> {
 /// The installed runtime whose `share/wine/wine.inf` mtime equals the integer in
 /// `<prefix>/.update-timestamp` — i.e. the build this prefix was last booted on.
 /// Running any other build against it triggers a full `wine.inf` reinstall.
-fn runtime_for_prefix(home: &Path, prefix: &Path) -> Option<PathBuf> {
+pub(crate) fn runtime_for_prefix(home: &Path, prefix: &Path) -> Option<PathBuf> {
     // The stamp file is CRLF-terminated; keep digits only.
     let raw = std::fs::read_to_string(prefix.join(".update-timestamp")).ok()?;
     let stamp: u64 = raw.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
@@ -175,14 +175,52 @@ fn runtime_for_prefix(home: &Path, prefix: &Path) -> Option<PathBuf> {
     None
 }
 
+/// What HDPIM is asked to do. Each verb is one export of `HDPIM.dll` with the same signature
+/// `(sessionId, driverInfoXml, callback)`; the host takes the verb as its 4th argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    /// `hdpimInstallProduct`: a fresh install, or (HDPIM decides) an upgrade of an older build of
+    /// the same product, or a repair of one whose folder was deleted.
+    Install,
+    /// `hdpimInstallUpdate`: the same pipeline gated on "a product with this SAP code and base
+    /// version is installed" (Adobe's own update entry point; package hooks see `update`).
+    Update,
+    /// `hdpimUnInstallProduct`.
+    Uninstall,
+}
+
+impl Op {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Op::Install => "install",
+            Op::Update => "update",
+            Op::Uninstall => "uninstall",
+        }
+    }
+}
+
+/// The state HDPIM's own record must show afterwards. Seeing "All N tasks completed." is not
+/// enough on its own: an update whose host died left the OLD exe in place, and the old success
+/// test ("the exe exists") reported `ok:true` on an unchanged prefix.
+#[derive(Clone, Debug)]
+pub struct Expect {
+    pub sap: String,
+    pub base: String,
+    /// Install/update: the BuildVersion hdpim.db must record for (sap, base).
+    /// Uninstall: None, and the (sap, base) row must be gone.
+    pub build: Option<String>,
+}
+
 /// Full install: prereqs -> seed runtime -> HDPIM install -> verify. `packages_dir`
 /// is the staged product package dir (holds `<SAP>/`, `Driver_core.xml`, deps).
 /// `driver_xml` is the DriverInfo to feed HDPIM. Returns the installed exe path.
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     em: &Emitter,
     cfg: &Config,
     prefix: &Path,
     cat: &crate::catalog::App,
+    expect: &Expect,
     driver_xml: &Path,
     packages_dir: &Path,
     dry_run: bool,
@@ -202,6 +240,7 @@ pub fn install(
     // on the first install's processes and looked like "hanging on vcrun2022".
     // Refusing here names the other install instead of deadlocking behind it.
     clear_orphan_hosts(em, prefix)?;
+    refuse_if_busy(prefix)?;
 
     em.progress("prereqs", 5, "prefix init + Win11 spoof + VC++ runtime");
     setup_prefix(em, cfg, prefix)?;
@@ -210,11 +249,57 @@ pub fn install(
     seed_runtime(em, cfg, prefix)?;
 
     em.progress("install", 45, "HDPIM decrypt + install (this takes minutes)");
-    let exe = run_hdpim(em, cfg, prefix, cat, driver_xml, packages_dir)?;
+    run_hdpim(em, cfg, prefix, Op::Install, driver_xml, packages_dir, expect, cat)?;
+    let exe = installed_exe_for(prefix, cat, &expect.sap, &expect.base)
+        .with_context(|| format!("HDPIM finished, but no installed {} exe was found", cat.name))?;
     em.progress("verify", 95, "checking the decrypted binary");
     verify(&exe)?;
     em.progress("install", 100, "installed");
     Ok(exe)
+}
+
+/// Refuse to touch a prefix where an Adobe app, an installer or another program is open.
+///
+/// 🚨 Every install used to END with a bare `wineserver -k` on the prefix: it killed whatever
+/// the user had open there without letting it save, and `-k` discards Adobe's preferences. The
+/// kill is gone (installer leftovers are closed by `neutron prefix provision`, which leaves a
+/// prefix alone while an app runs); this refusal is the other half, so an install never runs
+/// beside an open app in the first place.
+pub fn refuse_if_busy(prefix: &Path) -> Result<()> {
+    let busy = crate::busy::scan(prefix);
+    if busy.blocking() {
+        let names = busy.blocking_names();
+        return Err(crate::failure::Failure::new(
+            if busy.apps.is_empty() && busy.other.is_empty() { "installer-running" } else { "app-running" },
+            crate::failure::EX_RUNNING,
+            format!(
+                "{} Installing needs every Adobe app in this prefix closed. Nothing was changed.",
+                crate::busy::close_first_sentence(&names)
+            ),
+        )
+        .with("prefix_changed", false)
+        .with("apps_running", serde_json::json!(names))
+        .into());
+    }
+    Ok(())
+}
+
+/// The exe of the (sap, base) product HDPIM just recorded, by the exact folder in its record
+/// (`AppLaunch`), so a second year of the same app beside it can never be mistaken for it.
+/// Falls back to the catalog lookup when the record names no launch path.
+pub fn installed_exe_for(prefix: &Path, cat: &crate::catalog::App, sap: &str, base: &str) -> Option<PathBuf> {
+    if let Ok(Some(db)) = crate::hdpimdb::Db::read(prefix) {
+        if let Some(p) = db.product(sap, base) {
+            if let Some(win) = p.app_launch() {
+                if let Some(path) = crate::hdpimdb::win_to_prefix(prefix, &win) {
+                    if path.is_file() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    find_installed_exe(prefix, cat)
 }
 
 /// Find the installed app exe under `Program Files\Adobe\Adobe <app_name> <year>\`.
@@ -430,7 +515,7 @@ fn find_named(root: &Path, name: &std::ffi::OsStr, max_depth: u32) -> Option<Pat
 }
 
 /// wineboot (mono/gecko dialog suppressed) + Win11 24H2 spoof + Microsoft's components.
-fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
+pub(crate) fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     // Init: suppress the interactive Mono/Gecko installer dialog (it blocks headless).
     wine(cfg, prefix, &["wineboot", "--init"])
         .env("WINEDLLOVERRIDES", "mscoree,mshtml=d;winemenubuilder.exe=d")
@@ -498,7 +583,7 @@ fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
 ///   ADC/ADC64  -> Adobe Desktop Common (HDBox/HDPIM, ADS, IPCBox)
 /// The extractor is idempotent — it writes only files that are absent and reports
 /// the rest as "already present" — so this re-runs safely on a populated prefix.
-fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
+pub(crate) fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     let out = Command::new("python3")
         .arg(&cfg.extractor)
         .arg("--packages")
@@ -516,20 +601,106 @@ fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run the 32-bit host that drives HDPIM's install API. mshtml disabled so HDPIM's
-/// optional HD web-view UI can't crash Wine's mshtml (headless install proceeds).
-fn run_hdpim(
+/// The d3d DLLs the installer HOST loads as Wine builtins. HDPIM asks DXGI for the GPU's memory
+/// (`HardwareUtils::FetchHardwareSummary`); in a prefix `neutron prefix provision` has finished,
+/// DXVK's dxgi is the native one, and with no reachable display it cannot create a Vulkan instance
+/// and calls `terminate()`, killing the host mid-install (lab, 2026-10-16). Per process: the app
+/// launch path is untouched, and HDPIM only wants an adapter name and a memory figure.
+const HOST_DLL_OVERRIDES: &str =
+    "mshtml=d;winemenubuilder.exe=d;dxgi,d3d11,d3d10core,d3d9,d3d12,d3d12core=b";
+
+/// HDPIM's workflow error codes in plain words (from HDPIM 6.5.0.348's own log strings next to
+/// each code, and the lab runs). `op` matters for 130, which means different things.
+pub fn workflow_error_meaning(code: u32, op: Op) -> String {
+    match code {
+        101 => "Adobe's installer could not find the installed version it was asked to change.".into(),
+        103 => "Adobe's installer rejected the request Mud Hut gave it (a Mud Hut problem; please report it).".into(),
+        106 => "Adobe's installer could not read or write one of its own records in this prefix.".into(),
+        107 => "The download folder is missing Adobe's description of the app (Application.json).".into(),
+        108 => "Another Adobe installer is already running in this prefix.".into(),
+        127 | 162 => "A downloaded package could not be unpacked or did not pass Adobe's check. \
+                      Delete the download and try again."
+            .into(),
+        130 => match op {
+            Op::Uninstall => "Adobe's record lists nothing matching to remove, or another installed app \
+                              still uses it."
+                .into(),
+            _ => "This exact build is already installed, so there was nothing to do.".into(),
+        },
+        135 => "Adobe's record does not list this app as installed, so it cannot be updated in place.".into(),
+        139 => "A partial-update package arrived without its file list.".into(),
+        176 => "Adobe's installer cannot install to a network location.".into(),
+        182 => "A package Adobe lists for this app is missing from the download folder.".into(),
+        188 => "This build needs a newer Adobe installer engine than the one Mud Hut uses.".into(),
+        _ => format!("Adobe's installer stopped with error {code}."),
+    }
+}
+
+/// HDPIM's failure line: "Error occurred in <install product|install update|uninstall product|..>
+/// workflow with error code N".
+fn workflow_error(log: &str) -> Option<u32> {
+    let mut rest = log;
+    while let Some(i) = rest.find("Error occurred in ") {
+        let tail = &rest[i..];
+        let line = tail.lines().next().unwrap_or("");
+        if let Some(j) = line.find("workflow with error code") {
+            let code: String = line[j..].chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(c) = code.parse() {
+                return Some(c);
+            }
+        }
+        rest = &tail[1..];
+    }
+    None
+}
+
+/// Wait (bounded) for hdpim.db to show `expect`. HDPIM writes its record as the last task
+/// finishes; reading right after the host is stopped can race it by a moment.
+fn record_matches(prefix: &Path, expect: &Expect) -> (bool, String) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut seen;
+    loop {
+        match crate::hdpimdb::Db::read(prefix) {
+            Ok(Some(db)) => {
+                let p = db.product(&expect.sap, &expect.base);
+                seen = p.and_then(|p| p.build()).map(|b| b.to_string()).unwrap_or_else(|| "no record".into());
+                let ok = match (&expect.build, p) {
+                    (Some(want), Some(p)) => p.build().map(|b| crate::version::eq(b, want)).unwrap_or(false),
+                    (Some(_), None) => false,
+                    (None, p) => p.is_none(),
+                };
+                if ok {
+                    return (true, seen);
+                }
+            }
+            Ok(None) => seen = "no database".into(),
+            Err(e) => seen = format!("unreadable ({e:#})"),
+        }
+        if Instant::now() >= deadline {
+            return (false, seen);
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Run the 32-bit host that drives one HDPIM export (`op`) with `driver_xml`, and succeed only
+/// when HDPIM says so AND its own record agrees. mshtml disabled so HDPIM's optional HD web-view
+/// UI can't crash Wine's mshtml (headless install proceeds). Returns HDPIM's log, kept under
+/// `$XDG_CACHE_HOME/mudhut/logs/` (or the caller's `MUDHUT_HDPIM_LOG_DIR`).
+#[allow(clippy::too_many_arguments)]
+pub fn run_hdpim(
     em: &Emitter,
     cfg: &Config,
     prefix: &Path,
-    cat: &crate::catalog::App,
+    op: Op,
     driver_xml: &Path,
-    packages_dir: &Path,
+    cwd: &Path,
+    expect: &Expect,
+    cat: &crate::catalog::App,
 ) -> Result<PathBuf> {
-    use std::time::{Duration, Instant};
     // hdpim_host resolves EsdDirectory relative to its CWD (the driver.xml dir).
     // HDPIM's install runs async and the host otherwise pumps its full wait; we stop
-    // it EARLY once the decrypted PE appears, so the CLI doesn't idle for ~30 min.
+    // it EARLY once HDPIM reports completion, so the CLI doesn't idle for ~30 min.
     let driver_win = to_z_path(driver_xml);
     // Refuse a second decrypt into this prefix; clear an orphan from a killed run.
     clear_orphan_hosts(em, prefix)?;
@@ -539,8 +710,9 @@ fn run_hdpim(
         .arg(HDPIM_WIN)
         .arg(&driver_win)
         .arg("2400") // pump-second ceiling
-        .current_dir(packages_dir)
-        .env("WINEDLLOVERRIDES", "mshtml=d;winemenubuilder.exe=d");
+        .arg(op.verb())
+        .current_dir(cwd)
+        .env("WINEDLLOVERRIDES", std::env::var("MUDHUT_HOST_DLLOVERRIDES").unwrap_or_else(|_| HOST_DLL_OVERRIDES.into()));
     // Tie the host's life to ours: if Mud Hut is killed, the decrypt must not keep
     // running against a prefix nobody is supervising. Covers SIGKILL of the parent,
     // which no cleanup code of ours could handle.
@@ -555,7 +727,11 @@ fn run_hdpim(
     // completion signal — and so its chatter never lands in the stdout pipe
     // Collider reads as NDJSON.
     let mut host_log_path = std::env::temp_dir();
-    host_log_path.push(format!("mudhut-hdpim-{}.log", std::process::id()));
+    host_log_path.push(format!(
+        "mudhut-hdpim-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
     let host_log = std::fs::File::create(&host_log_path)
         .with_context(|| format!("creating {}", host_log_path.display()))?;
     let host_log2 = host_log.try_clone().context("duplicating the host log fd")?;
@@ -565,79 +741,74 @@ fn run_hdpim(
 
     let started = Instant::now();
     let deadline = started + Duration::from_secs(2400);
-    let exe = loop {
-        if let Some(status) = child.try_wait().context("polling hdpim_host")? {
-            // Host exited on its own — the install must have produced the exe.
-            match find_installed_exe(prefix, cat) {
-                Some(exe) => break exe,
-                None => bail!(
-                    "hdpim_host exited ({status}) but no installed {} exe found.{}",
-                    cat.name,
-                    kept_log(&host_log_path)
-                ),
-            }
+    let stop = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    loop {
+        let exited = child.try_wait().context("polling hdpim_host")?;
+        // Read the log AFTER polling, so a completion line written just before the host
+        // exited is seen.
+        let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
+
+        if let Some(code) = workflow_error(&log) {
+            stop(&mut child);
+            wineserver_wait_bounded(cfg, prefix, Duration::from_secs(60), em);
+            let kept = kept_log(&host_log_path);
+            return Err(crate::failure::Failure::new(
+                "installer-error",
+                crate::failure::EX_FAIL,
+                format!("{} (HDPIM workflow error {code}){kept}", workflow_error_meaning(code, op)),
+            )
+            .with("hdpim_error", code)
+            .into());
         }
+
         // ⛔ DO NOT stop just because the main executable exists.
         //
         // That is what this did, and it shipped a broken install: Photoshop.exe is
         // ONE payload of ~40 and lands early, so killing the host on sight of it
         // terminated HDPIM while it was still laying down the rest of the
         // application directory, Camera Raw, Color, CoreSync and the CC pieces.
-        // Photoshop then refuses to start with "Some of the Application components
-        // are missing from the Application directory" and "Adobe Creative Cloud …
-        // is missing or damaged". It survived on the dev box only because that
-        // prefix had been installed into repeatedly; a FRESH prefix does not.
         //
         // HDPIM says when it is finished — "All N tasks completed." from its
-        // ProgressManager. Use that.
-        let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
-
-        // HDPIM refuses to install over an existing install: it fails the workflow
-        // (error 130) and releases its locks. The old code could not see that — it
-        // stopped as soon as the app's exe existed, which on a reinstall is
-        // IMMEDIATELY, so it reported "installed" having done nothing at all. A
-        // user trying to repair a damaged install got a success message and an
-        // unchanged prefix. Surface it instead.
-        if let Some(i) = log.find("Error occurred in install product workflow with error code") {
-            let code: String = log[i..]
-                .chars()
-                .skip_while(|c| !c.is_ascii_digit())
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            let _ = child.kill();
-            let _ = child.wait();
-            let kept = kept_log(&host_log_path);
-            let already = find_installed_exe(prefix, cat).is_some();
-            let hint = if already {
-                format!(
-                    "\n\n{} is ALREADY installed in this prefix, and HDPIM will not install over \
-                     it — so a reinstall cannot repair a damaged copy. Install into a fresh prefix, \
-                     or remove the existing application directory under\n  {}",
-                    cat.name,
-                    prefix.join("drive_c/Program Files/Adobe").display()
-                )
-            } else {
-                String::new()
-            };
-            bail!("HDPIM refused the install (workflow error {code}).{hint}{kept}");
+        // ProgressManager. Use that, and then check its record (below).
+        if log.contains("tasks completed.") {
+            if op == Op::Uninstall {
+                // After an uninstall HDPIM runs a short repair of what remains
+                // (`ccd.hd.repair_after_uninstall`); let it finish.
+                std::thread::sleep(Duration::from_secs(5));
+            }
+            em.progress(op.verb(), 90, "all HDPIM tasks completed — stopping host");
+            stop(&mut child);
+            break;
         }
 
-        if log.contains("tasks completed.") {
-            let exe = find_installed_exe(prefix, cat)
-                .context("HDPIM reported all tasks completed but no installed exe was found")?;
-            verify(&exe)?;
-            em.progress("install", 90, "all HDPIM tasks completed — stopping host");
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_file(&host_log_path);
-            break exe;
+        if let Some(status) = exited {
+            // 🚨 The host exited WITHOUT HDPIM reporting completion: it died (a DXVK abort did
+            // exactly this, lab 2026-10-16). This branch used to take "the exe exists" as
+            // success, and on an update the OLD exe exists, so an unchanged prefix was reported
+            // as updated. It is a failure.
+            wineserver_wait_bounded(cfg, prefix, Duration::from_secs(60), em);
+            let tail: Vec<&str> = log.lines().rev().take(5).collect();
+            let kept = kept_log(&host_log_path);
+            return Err(crate::failure::Failure::new(
+                "installer-died",
+                crate::failure::EX_FAIL,
+                format!(
+                    "Adobe's installer stopped before it finished ({status}).\nLast lines:\n{}{kept}",
+                    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+                ),
+            )
+            .into());
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop(&mut child);
+            wineserver_wait_bounded(cfg, prefix, Duration::from_secs(60), em);
             let tail: Vec<&str> = log.lines().rev().take(5).collect();
             bail!(
-                "HDPIM install timed out after 2400s without reporting completion.\nLast lines:\n{}{}",
+                "HDPIM {} timed out after 2400s without reporting completion.\nLast lines:\n{}{}",
+                op.verb(),
                 tail.into_iter().rev().collect::<Vec<_>>().join("\n"),
                 kept_log(&host_log_path)
             );
@@ -651,33 +822,75 @@ fn run_hdpim(
         // and expanded size is not derivable from the compressed payloads), so the
         // bar ramps asymptotically toward 85% with elapsed time and never claims to
         // finish, while the MESSAGE carries the real, checkable signal: megabytes
-        // written so far. A stalled install shows a frozen MB count with a bar that
-        // is still moving, which is the honest way round.
+        // written so far and tasks finished.
         let secs = Instant::now().saturating_duration_since(started).as_secs();
         let mb = dir_size_mb(prefix, cat);
-        // HDPIM logs a line per finished task; counting them is a real signal the
-        // user can watch, unlike an elapsed-time ramp.
-        let tasks = log.matches("Completed 'INSTALL' task").count();
+        let tasks = log.matches("Completed 'INSTALL' task").count() + log.matches("Completed 'UN-INSTALL' task").count();
         let pct = 25u8 + (60.0 * (1.0 - (-(secs as f64) / 420.0).exp())) as u8;
         em.progress(
-            "install",
+            op.verb(),
             pct.min(85),
             &format!(
-                "HDPIM decrypt · {tasks} tasks done · {mb} MB written · {}m{:02}s elapsed",
+                "Adobe's installer · {tasks} tasks done · {mb} MB in the app folder · {}m{:02}s elapsed",
                 secs / 60,
                 secs % 60
             ),
         );
         std::thread::sleep(Duration::from_secs(10));
-    };
-    let _ = wineserver(cfg, prefix, "-k");
-    Ok(exe)
+    }
+
+    // ⛔ NO `wineserver -k` HERE. It used to end every install, killing every process in the
+    // prefix (an app the user had open lost its unsaved work, and `-k` discards Adobe's
+    // preferences). The host is stopped above; wait (bounded) for the rest of the installer's
+    // processes to end on their own. Anything still left is an Adobe helper, which
+    // `neutron prefix provision` closes when no app is open.
+    wineserver_wait_bounded(cfg, prefix, Duration::from_secs(60), em);
+
+    let (ok, seen) = record_matches(prefix, expect);
+    let log_path = keep_log_quietly(&host_log_path);
+    if !ok {
+        let want = expect.build.clone().unwrap_or_else(|| "no record".into());
+        return Err(crate::failure::Failure::new(
+            "record-mismatch",
+            crate::failure::EX_FAIL,
+            format!(
+                "Adobe's installer reported that it finished, but its record shows {} {} as {seen} \
+                 instead of {want}.\nHDPIM's log: {}",
+                expect.sap,
+                expect.base,
+                log_path.display()
+            ),
+        )
+        .into());
+    }
+    Ok(log_path)
 }
 
-/// On a failed install, keep HDPIM's log (it names the component and the reason) under
-/// `$XDG_CACHE_HOME/mudhut/logs/` and return a message with its path and its error lines.
-/// The log used to be deleted on every failure, so "workflow error 182" arrived with no way
-/// to see which package HDPIM was missing.
+/// Where HDPIM's logs are kept: `$MUDHUT_HDPIM_LOG_DIR` (an update points it into the prefix's
+/// own `.mudhut/logs/`), else `$XDG_CACHE_HOME/mudhut/logs/`.
+fn log_dir() -> Option<PathBuf> {
+    std::env::var_os("MUDHUT_HDPIM_LOG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| crate::download::xdg_dir("XDG_CACHE_HOME", ".cache").ok().map(|d| d.join("mudhut/logs")))
+}
+
+/// Move the host log into [`log_dir`]; returns where it ended up.
+fn keep_log_quietly(host_log: &Path) -> PathBuf {
+    if let Some(d) = log_dir() {
+        if std::fs::create_dir_all(&d).is_ok() {
+            let dest = d.join(host_log.file_name().unwrap_or_default());
+            if std::fs::copy(host_log, &dest).is_ok() {
+                let _ = std::fs::remove_file(host_log);
+                return dest;
+            }
+        }
+    }
+    host_log.to_path_buf()
+}
+
+/// On a failed install, keep HDPIM's log (it names the component and the reason) and return a
+/// message with its path and its error lines. The log used to be deleted on every failure, so
+/// "workflow error 182" arrived with no way to see which package HDPIM was missing.
 fn kept_log(host_log: &Path) -> String {
     let log = std::fs::read_to_string(host_log).unwrap_or_default();
     let errors: Vec<&str> = log
@@ -685,19 +898,7 @@ fn kept_log(host_log: &Path) -> String {
         .filter(|l| l.contains("rror") || l.contains("not present") || l.contains("failed"))
         .collect();
     let shown = errors[errors.len().saturating_sub(8)..].join("\n");
-    let dir = crate::download::xdg_dir("XDG_CACHE_HOME", ".cache").map(|d| d.join("mudhut/logs"));
-    let kept = dir.ok().and_then(|d| {
-        std::fs::create_dir_all(&d).ok()?;
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|t| t.as_secs())
-            .unwrap_or(0);
-        let dest = d.join(format!("hdpim-{secs}.log"));
-        std::fs::copy(host_log, &dest).ok()?;
-        let _ = std::fs::remove_file(host_log);
-        Some(dest)
-    });
-    let at = kept.as_deref().unwrap_or(host_log);
+    let at = keep_log_quietly(host_log);
     format!("\nHDPIM's log: {}\n{}", at.display(), shown)
 }
 
@@ -805,7 +1006,7 @@ fn microsoft_components(cfg: &Config, prefix: &Path) -> Result<()> {
     bail!("could not install the Microsoft components: {detail}")
 }
 
-fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Emitter) {
+pub(crate) fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Emitter) {
     let ws = cfg.wine.with_file_name("wineserver");
     let ws = if ws.is_file() { ws } else { cfg.wine.with_file_name("server").join("wineserver") };
     let mut child = match Command::new(ws)
@@ -836,13 +1037,6 @@ fn wineserver_wait_bounded(cfg: &Config, prefix: &Path, limit: Duration, em: &Em
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-}
-
-fn wineserver(cfg: &Config, prefix: &Path, flag: &str) -> std::io::Result<std::process::ExitStatus> {
-    // wineserver sits next to wine.
-    let ws = cfg.wine.with_file_name("wineserver");
-    let ws = if ws.is_file() { ws } else { cfg.wine.with_file_name("server").join("wineserver") };
-    Command::new(ws).arg(flag).env("WINEPREFIX", prefix).status()
 }
 
 /// Map an absolute Linux path to a Wine `Z:` Windows path.
@@ -919,6 +1113,20 @@ impl CommandExt for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_errors_are_found_and_explained() {
+        let log = "  HDPIM[30] HDPIM|X :: something\n  HDPIM[60] HDPIM|WorkflowManager :: Error occurred in install update workflow with error code 107 error message Could not find\n";
+        assert_eq!(workflow_error(log), Some(107));
+        assert_eq!(workflow_error("Error occurred in uninstall product workflow with error code 130 error message x"), Some(130));
+        assert_eq!(workflow_error("All 4 tasks completed."), None);
+        // 130 is "nothing to do", never "HDPIM will not install over it".
+        let m = workflow_error_meaning(130, Op::Install);
+        assert!(m.contains("already installed") && !m.contains("will not install"), "{m}");
+        assert!(workflow_error_meaning(107, Op::Update).contains("Application.json"));
+        assert!(workflow_error_meaning(999, Op::Install).contains("999"));
+    }
+
     #[test]
     fn z_path_maps_slashes() {
         assert_eq!(to_z_path(Path::new("/home/x/d.xml")), r"Z:\home\x\d.xml");

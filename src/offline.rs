@@ -234,7 +234,7 @@ pub fn install(
     };
 
     let r = crate::download::hdpim_install_and_provision(
-        em, &cat, &driver_xml, &products, prefix, "offline", dry_run,
+        em, &cat, &plan, &driver_xml, &products, prefix, "offline", dry_run,
     );
     if let Some(dir) = scratch {
         let _ = fs::remove_dir_all(dir);
