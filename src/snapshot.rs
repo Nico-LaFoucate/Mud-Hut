@@ -278,8 +278,18 @@ pub fn scope(prefix: &Path, app_dir_rel: &str, product: Option<&Product>, deps: 
     // Nested preference folders: the outermost one covers the rest.
     let pall: Vec<String> = prefs.iter().cloned().collect();
     prefs.retain(|p| !pall.iter().any(|o| inside(p, o)));
-    // Files inside a tree are already covered.
-    files.retain(|f| !trees.iter().any(|t| inside(f, t)) && !prefs.iter().any(|p| inside(f, p)));
+    // Files inside a tree -- or AT a tree's path: Adobe can list one path both as a target folder
+    // and as an uninstall file (CCXP's Vulcan\specifiers\ccxprocess_hd.xml, 2026-10-17) -- are
+    // already covered. A path listed twice made rollback put it back, then move it aside again
+    // and fail (exit 8, half rolled back).
+    files.retain(|f| {
+        !trees.iter().any(|t| eq_ci(f, t) || inside(f, t)) && !prefs.iter().any(|p| eq_ci(f, p) || inside(f, p))
+    });
+    // One entry per path, ignoring case (Windows paths).
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    trees.retain(|t| seen.insert(t.to_lowercase()));
+    files.retain(|f| seen.insert(f.to_lowercase()));
+    prefs.retain(|p| seen.insert(p.to_lowercase()));
     let mut out: Vec<Entry> = trees.into_iter().map(|rel| Entry { rel, kind: "tree".into(), existed: false, files: 0, bytes: 0 }).collect();
     out.extend(files.into_iter().map(|rel| Entry { rel, kind: "file".into(), existed: false, files: 0, bytes: 0 }));
     out.extend(prefs.into_iter().map(|rel| Entry { rel, kind: "prefs".into(), existed: false, files: 0, bytes: 0 }));
@@ -512,6 +522,12 @@ pub fn restore(prefix: &Path, dir: &Path, meta: &mut Meta, hives: &[&str]) -> Re
                 }
             }
             _ => {
+                // A snapshot taken before paths were de-duplicated can list one path twice; the
+                // first entry already put it back. Never move it aside again.
+                if e.existed && fs::symlink_metadata(&snap).is_err() {
+                    notes.push(format!("{} was already restored", e.rel));
+                    continue;
+                }
                 if fs::symlink_metadata(&cur).is_ok() {
                     n += 1;
                     let t = trash.join(format!("{n}"));
@@ -693,6 +709,26 @@ mod tests {
         restore(&p, &dir, &mut meta, &["system.reg", "userdef.reg"]).unwrap();
         assert_eq!(fs::read(p.join(prefs).join("prefs.txt")).unwrap(), b"changed after the update");
         assert_eq!(fs::read(p.join("user.reg")).unwrap(), b"user settings since");
+        let _ = fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn restore_survives_a_path_listed_twice() {
+        // A snapshot from before de-duplication: the same file as a "tree" and as a "file".
+        let p = fixture();
+        let rel = "drive_c/Program Files/Common Files/Adobe/Vulcan/specifiers/ccxprocess_hd.xml";
+        fs::create_dir_all(p.join(rel).parent().unwrap()).unwrap();
+        fs::write(p.join(rel), b"before").unwrap();
+        let entries = vec![
+            Entry { rel: rel.into(), kind: "tree".into(), existed: false, files: 0, bytes: 0 },
+            Entry { rel: rel.into(), kind: "file".into(), existed: false, files: 0, bytes: 0 },
+        ];
+        let (dir, mut meta) = create(&p, "premiere", "PPRO", Some("25.3.0.84"), Some("25.6.6.5"), entries).unwrap();
+        fs::write(p.join(rel), b"after the update").unwrap();
+        let notes = restore(&p, &dir, &mut meta, HIVES).unwrap();
+        assert_eq!(fs::read(p.join(rel)).unwrap(), b"before");
+        assert!(notes.iter().any(|n| n.contains("already restored")), "{notes:?}");
+        assert_eq!(meta.state, "rolled-back");
         let _ = fs::remove_dir_all(&p);
     }
 
