@@ -102,19 +102,28 @@ fn render(plan: &DownloadPlan, esd: &dyn Fn(&str) -> String, req: &Request) -> S
             d.sap, d.base_version, esd(&d.sap)
         ));
     }
-    // `/ProductInfo/Modules/Module`, each with an `<Id>` child (HDPIM reads a Module's child
-    // elements by name: "Id", "Baseline"). Only present when some module is left out.
+    // Module selection, only when some module is left out (otherwise HDPIM installs every module,
+    // exactly as every install so far). Lab-proven form (2026-10-16, Photoshop 27.8 staged without
+    // the UltraCafModels zips): `/ProductInfo/Modules/Module` with child elements `<Id>` and
+    // `<Baseline>true</Baseline>`, AND `<installType>baseline</installType>` in RequestInfo. With
+    // that HDPIM logs "package '...UltraCafModels-Nano' rejected as module configuration does not
+    // apply". Without installType it runs a "complete" install and selects every module anyway
+    // (then fails with error 182 on the missing zips); `<Module Id="..."/>` is rejected outright
+    // (error 103, "Module Id must be specified").
     let modules = if plan.modules.is_empty() {
         String::new()
     } else {
         let mut m = String::from("    <Modules>\n");
         for id in &plan.modules {
-            m.push_str(&format!("      <Module>\n        <Id>{}</Id>\n      </Module>\n", esc(id)));
+            m.push_str(&format!("      <Module>\n        <Id>{}</Id>\n        <Baseline>true</Baseline>\n      </Module>\n", esc(id)));
         }
         m.push_str("    </Modules>\n");
         m
     };
     let mut request_extra = String::new();
+    if !plan.modules.is_empty() {
+        request_extra.push_str("    <installType>baseline</installType>\n");
+    }
     if let Some(d) = req.delete_user_preferences {
         request_extra.push_str(&format!("    <DeleteUserPreferences>{d}</DeleteUserPreferences>\n"));
     }
@@ -278,7 +287,8 @@ mod tests {
         assert!(x.contains("<EsdDirectory>./PHSP</EsdDirectory>"), "{x}");
         assert!(x.contains(r"<EsdDirectory>Z:\var\cache\x\products\COCM</EsdDirectory>"), "{x}");
         assert!(x.contains("<EsdDirectory>./CORE</EsdDirectory>"), "unlisted roots stay relative: {x}");
-        assert!(x.contains("<Module>\n        <Id>PPRO-ObjectMask</Id>\n      </Module>"), "{x}");
+        assert!(x.contains("<Module>\n        <Id>PPRO-ObjectMask</Id>\n        <Baseline>true</Baseline>\n      </Module>"), "{x}");
+        assert!(x.contains("<installType>baseline</installType>"), "{x}");
         assert!(x.contains("<DeleteUserPreferences>false</DeleteUserPreferences>"), "{x}");
         let u = write_uninstall_xml(&xml_dir, "Audition", "AUDT", "26.3", "26.0", "win64").unwrap();
         let ux = std::fs::read_to_string(&u).unwrap();

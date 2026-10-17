@@ -654,6 +654,19 @@ fn workflow_error(log: &str) -> Option<u32> {
     None
 }
 
+/// HDPIM's per-package failure line: "Error occurred in <extract|install|...> of package (...).
+/// Error code: 'N'". Not terminal on its own (HDPIM retries), so callers pair it with silence.
+fn task_error(log: &str) -> Option<u32> {
+    let i = log.rfind(" of package (")?;
+    let line_start = log[..i].rfind('\n').map(|j| j + 1).unwrap_or(0);
+    let line = log[line_start..].lines().next()?;
+    if !line.contains("Error occurred in ") {
+        return None;
+    }
+    let j = line.find("Error code: '")? + "Error code: '".len();
+    line[j..].chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
+}
+
 /// Wait (bounded) for hdpim.db to show `expect`. HDPIM writes its record as the last task
 /// finishes; reading right after the host is stopped can race it by a moment.
 fn record_matches(prefix: &Path, expect: &Expect) -> (bool, String) {
@@ -745,11 +758,35 @@ pub fn run_hdpim(
         let _ = child.kill();
         let _ = child.wait();
     };
+    let (mut last_len, mut last_growth) = (0usize, Instant::now());
     loop {
         let exited = child.try_wait().context("polling hdpim_host")?;
         // Read the log AFTER polling, so a completion line written just before the host
         // exited is seen.
         let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
+        if log.len() != last_len {
+            last_len = log.len();
+            last_growth = Instant::now();
+        }
+
+        // A package task failed and HDPIM then went quiet. Measured on a corrupted package:
+        // four extract retries, "Error occurred in extract of package (...). Error code: '127'",
+        // then no workflow error and no further output; the host would have sat out its
+        // 40-minute ceiling. Two silent minutes after a task error is the failure.
+        if let Some(code) = task_error(&log) {
+            if last_growth.elapsed() >= Duration::from_secs(120) {
+                stop(&mut child);
+                wineserver_wait_bounded(cfg, prefix, Duration::from_secs(60), em);
+                let kept = kept_log(&host_log_path);
+                return Err(crate::failure::Failure::new(
+                    "installer-error",
+                    crate::failure::EX_FAIL,
+                    format!("{} (HDPIM task error {code}){kept}", workflow_error_meaning(code, op)),
+                )
+                .with("hdpim_error", code)
+                .into());
+            }
+        }
 
         if let Some(code) = workflow_error(&log) {
             stop(&mut child);
@@ -1120,6 +1157,9 @@ mod tests {
         assert_eq!(workflow_error(log), Some(107));
         assert_eq!(workflow_error("Error occurred in uninstall product workflow with error code 130 error message x"), Some(130));
         assert_eq!(workflow_error("All 4 tasks completed."), None);
+        let t = "  HDPIM[30] HDPIM|ExtractManager :: Cleaning up\n  HDPIM[60] HDPIM|ExtractManager :: Error occurred in extract of package (Name: AdobeAudition26All Version: 26.5.0.82). Error code: '127'\n[host] alive, elapsed 10s / 2400s\n";
+        assert_eq!(task_error(t), Some(127));
+        assert_eq!(task_error("Completed 'EXTRACT' task for Package (Name: X)"), None);
         // 130 is "nothing to do", never "HDPIM will not install over it".
         let m = workflow_error_meaning(130, Op::Install);
         assert!(m.contains("already installed") && !m.contains("will not install"), "{m}");

@@ -145,6 +145,11 @@ enum Cmd {
         /// Keep the downloaded packages afterwards.
         #[arg(long)]
         keep_download: bool,
+        /// A folder of Adobe packages to reuse instead of downloading them (an offline package,
+        /// a kept download; `<SAP>/<package>.zip` layout). Repeatable. Each is checked against
+        /// Adobe's checksums first.
+        #[arg(long)]
+        source: Vec<std::path::PathBuf>,
     },
     /// Put back the version an update replaced (newest update first).
     Rollback {
@@ -240,6 +245,16 @@ struct InstallArgs {
     /// 13.8 GB). Off by default, as in Creative Cloud.
     #[arg(long)]
     speech_packs: bool,
+
+    /// With --version: allow a build Neutron has not verified yet (after the user confirmed it).
+    /// Without it the newest VERIFIED build of that version is installed.
+    #[arg(long)]
+    allow_unverified: bool,
+
+    /// With --version: after the new version is installed, remove the older versions of the app
+    /// with Adobe's own uninstaller. Your settings, presets and plug-ins stay.
+    #[arg(long)]
+    remove_previous: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -271,7 +286,13 @@ fn main() -> ExitCode {
         Cmd::Install(a) => ensure_prefix_dir(&a.prefix, a.dry_run).and_then(|()| match a.method {
             // download has its own decrypt-install engine (HDPIM), not copy-staging.
             Method::Download => {
-                let opts = feed::PlanOpts { major: a.version, speech_packs: a.speech_packs, ..Default::default() };
+                let opts = feed::PlanOpts {
+                    major: a.version,
+                    speech_packs: a.speech_packs,
+                    allow_unverified: a.allow_unverified,
+                    remove_previous: a.remove_previous,
+                    ..Default::default()
+                };
                 download::install(&em, a.app.as_deref(), a.source.as_deref(), &a.prefix, a.dry_run,
                                   a.minimal, a.keep_download, &opts)
             }
@@ -286,9 +307,9 @@ fn main() -> ExitCode {
         }),
         Cmd::Ledger => ledger::cmd_ledger(&em),
         Cmd::Inventory { prefix } => inventory::cmd_inventory(&em, &prefix),
-        Cmd::Update { apps, prefix, all, to, allow_unverified, no_snapshot, dry_run, keep_download } => update::cmd_update(
+        Cmd::Update { apps, prefix, all, to, allow_unverified, no_snapshot, dry_run, keep_download, source } => update::cmd_update(
             &em,
-            update::UpdateOpts { prefix, apps, all, to, allow_unverified, no_snapshot, dry_run, keep_download },
+            update::UpdateOpts { prefix, apps, all, to, allow_unverified, no_snapshot, dry_run, keep_download, sources: source },
         ),
         Cmd::Rollback { prefix, app, snapshot } => update::cmd_rollback(&em, &prefix, app.as_deref(), snapshot.as_deref()),
         Cmd::Snapshots { prefix, prune, keep } => update::cmd_snapshots(&em, &prefix, prune, keep),

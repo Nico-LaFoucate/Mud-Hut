@@ -51,7 +51,7 @@ pub fn install(
 
     // Resolve the product + its downloadable dependencies (lightweight: no payloads).
     let ledger = Ledger::load(em)?;
-    let build = crate::feed::resolve_build_version(em, &ledger, app_id, opts.major)?;
+    let build = crate::feed::resolve_build_version(em, &ledger, app_id, opts.major, opts.allow_unverified)?;
     let (manifest, raw_manifest) = crate::feed::fetch_manifest(em, &ledger, &build)?;
     let mut plan = crate::feed::plan_with(&build, &manifest, "en_US", opts);
     let dep_builds = crate::feed::resolve_dependencies(em, &ledger, &plan.dependencies, minimal)?;
@@ -118,7 +118,7 @@ pub fn install(
     let driver_xml = crate::driver::write_driver_xml_roots(&plan, &products, &roots, &crate::driver::Request::default())?;
 
     // Shared HDPIM tail (same engine `offline` uses).
-    hdpim_install_and_provision(em, &cat, &plan, &driver_xml, &products, prefix, "download", dry_run)?;
+    hdpim_install_and_provision_opts(em, &cat, &plan, &driver_xml, &products, prefix, "download", dry_run, opts.remove_previous)?;
 
     // The downloaded packages are tens of GB and are never read again once installed.
     // Only OUR cache is removed — never a caller-supplied --source.
@@ -235,6 +235,21 @@ pub(crate) fn hdpim_install_and_provision(
     method: &str,
     dry_run: bool,
 ) -> Result<()> {
+    hdpim_install_and_provision_opts(em, cat, plan, driver_xml, products, prefix, method, dry_run, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hdpim_install_and_provision_opts(
+    em: &Emitter,
+    cat: &crate::catalog::App,
+    plan: &DownloadPlan,
+    driver_xml: &Path,
+    products: &Path,
+    prefix: &Path,
+    method: &str,
+    dry_run: bool,
+    remove_previous: bool,
+) -> Result<()> {
     let cfg = crate::hdpim::discover(&repo_tools_dir()?, accc_packages_dir(em)?, Some(prefix))?;
     let expect = crate::hdpim::Expect {
         sap: plan.sap.clone(),
@@ -246,6 +261,7 @@ pub(crate) fn hdpim_install_and_provision(
     if dry_run {
         return Ok(());
     }
+    let removed = if remove_previous { remove_previous_majors(em, &cfg, prefix, cat, plan)? } else { vec![] };
     // Seed the app's shipped UI fonts (Adobe Clean) into windows/Fonts BEFORE the
     // provision below registers them. HDPIM leaves these only under the app's
     // Resources/ui-fonts; without this the provisioned Segoe UI->Adobe Clean font
@@ -266,9 +282,61 @@ pub(crate) fn hdpim_install_and_provision(
             "prefix": prefix.display().to_string(),
             "exe": exe.display().to_string(),
             "provisioned": true,
+            "removed_previous": removed,
         }));
     }
     Ok(())
+}
+
+/// After a new major is installed: remove the older majors of the same app through HDPIM's own
+/// uninstall (`hdpimUnInstallProduct`, `DeleteUserPreferences=false`), the way Creative Cloud's
+/// "Remove previous version" does. Only versions Adobe's record lists can be removed this way; a
+/// copied older version without a record is left in place and named in the result.
+fn remove_previous_majors(
+    em: &Emitter,
+    cfg: &crate::hdpim::Config,
+    prefix: &Path,
+    cat: &crate::catalog::App,
+    plan: &DownloadPlan,
+) -> Result<Vec<serde_json::Value>> {
+    let mut out = Vec::new();
+    let new_major = crate::version::major(&plan.product_version);
+    let db = crate::hdpimdb::Db::read(prefix)?.unwrap_or(crate::hdpimdb::Db { products: vec![] });
+    let olds: Vec<crate::hdpimdb::Product> = db
+        .products
+        .iter()
+        .filter(|p| p.sap == plan.sap && p.base().map(|b| !crate::version::eq(b, &plan.base_version)).unwrap_or(false))
+        .filter(|p| p.build().map(|b| crate::version::major(b) < new_major).unwrap_or(false))
+        .cloned()
+        .collect();
+    for old in olds {
+        let (codex, base) = (old.codex.clone(), old.base().unwrap_or_default().to_string());
+        let platform = old.meta.get("Platform").cloned().unwrap_or_else(|| "win64".into());
+        em.progress("remove-previous", 50, &format!("removing {} {} (your settings stay)", cat.name, codex));
+        let dir = std::env::temp_dir().join(format!("mudhut-uninstall-{}-{}", std::process::id(), codex));
+        let xml = crate::driver::write_uninstall_xml(&dir, &plan.name, &plan.sap, &codex, &base, &platform)?;
+        let expect = crate::hdpim::Expect { sap: plan.sap.clone(), base: base.clone(), build: None };
+        let r = crate::hdpim::run_hdpim(em, cfg, prefix, crate::hdpim::Op::Uninstall, &xml, &dir, &expect, cat);
+        let _ = fs::remove_dir_all(&dir);
+        match r {
+            Ok(_) => out.push(serde_json::json!({"version": old.build(), "removed": true})),
+            Err(e) => {
+                em.note(&format!("could not remove {} {codex}: {e:#}", cat.name));
+                out.push(serde_json::json!({"version": old.build(), "removed": false, "message": format!("{e:#}")}));
+            }
+        }
+    }
+    // Older majors without Adobe's record (copied from Windows) cannot be removed by Adobe's
+    // uninstaller; Mud Hut does not delete folders it cannot account for.
+    if let Ok(inv) = crate::inventory::inventory(&prefix.display().to_string()) {
+        for a in inv.apps.iter().filter(|a| a.id == cat.id && a.managed_by == crate::inventory::Managed::AdoptNeeded) {
+            if a.version.as_deref().map(|v| crate::version::major(v) < new_major).unwrap_or(false) {
+                out.push(serde_json::json!({"version": a.version, "removed": false, "dir": a.dir,
+                    "message": "This older version was copied without Adobe's records, so Adobe's uninstaller cannot remove it. It was left in place."}));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Stage `<products>/<SAP>/Application.json` (the raw manifest) — HDPIM's ESD layout.
@@ -585,6 +653,25 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
             continue;
         }
 
+        // The same package may already be on disk under another build's folder: a package
+        // Adobe did not change keeps its version, its CDN path and its bytes across builds
+        // (Photoshop 27.8 -> 27.11: SuperCafModels 27.5.0.13 is one file at one path in both
+        // manifests). HDPIM's update needs every package present, even unchanged ones, so this
+        // saves re-downloading gigabytes. Reused only after it passes Adobe's own segment hashes.
+        if !p.validation_url.is_empty() {
+            if let Some(src) = find_reusable(&p.sap, file, p.bytes, &out) {
+                let v = crate::net::retry(&p.name, |m| em.note(m), || fetch_validation(&agent, &ledger.honest_headers(), &p.validation_url));
+                if let Ok(v) = v {
+                    if verify_file(&src, &v).is_ok() && clone_or_copy(&src, &out).is_ok() {
+                        done += p.bytes;
+                        em.note(&format!("[{}/{n}] reused (verified) from {} — {}", i + 1, src.display(), p.name));
+                        last_pct = emit_pct(em, done, total, &p.name, last_pct);
+                        continue;
+                    }
+                }
+            }
+        }
+
         em.note(&format!(
             "[{}/{n}] {} — {:.1} MiB",
             i + 1,
@@ -769,6 +856,73 @@ fn download_one(
     f.flush()?;
     drop(f);
     fs::rename(&tmp, out).with_context(|| format!("finalizing {}", out.display()))?;
+    Ok(())
+}
+
+/// A file named `file` of exactly `bytes` under another products dir: `$MUDHUT_PACKAGE_SOURCES`
+/// (colon-separated products dirs, e.g. an offline package or a kept download), then every
+/// Mud Hut download-cache folder.
+fn find_reusable(sap: &str, file: &str, bytes: u64, not: &Path) -> Option<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::var_os("MUDHUT_PACKAGE_SOURCES")
+        .map(|v| std::env::split_paths(&v).collect())
+        .unwrap_or_default();
+    if let Ok(cache) = xdg_dir("XDG_CACHE_HOME", ".cache") {
+        if let Ok(rd) = fs::read_dir(cache.join("mudhut")) {
+            roots.extend(rd.flatten().map(|e| e.path().join("products")));
+        }
+    }
+    roots.into_iter().map(|r| r.join(sap).join(file)).find(|c| {
+        c != not && fs::metadata(c).map(|m| m.is_file() && m.len() == bytes).unwrap_or(false)
+    })
+}
+
+/// Hash `path` segment by segment against Adobe's validation list.
+fn verify_file(path: &Path, v: &Validation) -> Result<()> {
+    let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hasher: Box<dyn DynDigest> = if v.md5 { Box::new(Md5::new()) } else { Box::new(Sha256::new()) };
+    let seg = v.segment_size.max(1) as usize;
+    let mut buf = vec![0u8; seg];
+    let label = path.display().to_string();
+    let mut idx = 0usize;
+    loop {
+        let mut filled = 0usize;
+        while filled < seg {
+            let n = f.read(&mut buf[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            break;
+        }
+        hasher.update(&buf[..filled]);
+        check_segment(v, idx, &to_hex(&hasher.finalize_reset()), &label)?;
+        idx += 1;
+        if filled < seg {
+            break;
+        }
+    }
+    if idx != v.segments.len() {
+        bail!("{label}: {idx} segment(s), validation lists {}", v.segments.len());
+    }
+    Ok(())
+}
+
+/// Reflink when the filesystem can (btrfs/XFS: instant, no space), else copy; via a .part file.
+fn clone_or_copy(src: &Path, dst: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let tmp = dst.with_extension("part");
+    {
+        let s = File::open(src)?;
+        let d = File::create(&tmp)?;
+        const FICLONE: libc::c_ulong = 0x4004_9409;
+        if unsafe { libc::ioctl(d.as_raw_fd(), FICLONE as _, s.as_raw_fd()) } != 0 {
+            drop(d);
+            fs::copy(src, &tmp)?;
+        }
+    }
+    fs::rename(&tmp, dst)?;
     Ok(())
 }
 

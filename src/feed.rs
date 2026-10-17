@@ -189,6 +189,12 @@ pub struct PlanOpts {
     pub speech_packs: bool,
     /// Modules that are installed already and must stay (an update keeps what the user has).
     pub keep_modules: Vec<String>,
+    /// With `major`: a build Neutron has not verified may be chosen (the user confirmed it).
+    /// Under the hold policy the newest VERIFIED build of that major is picked when there is one.
+    pub allow_unverified: bool,
+    /// After installing a new major, remove the older majors of the same app (HDPIM's own
+    /// uninstall, user preferences kept).
+    pub remove_previous: bool,
     /// Exactly these modules (an update of a recorded install: the modules Adobe's record lists,
     /// as Creative Cloud updates what is installed and nothing more). Overrides the rest.
     pub only_modules: Option<Vec<String>>,
@@ -292,12 +298,12 @@ pub fn candidates_from_doc(doc: &roxmltree::Document, sap: &str, platform: &str)
 
 /// Resolve the latest build for `app_id` from the live product feed.
 pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Build> {
-    resolve_build_version(em, ledger, app_id, None)
+    resolve_build_version(em, ledger, app_id, None, false)
 }
 
 /// Resolve the newest build for `app_id`, or with `major`, the newest build of that major
 /// (`install --version 28` = Photoshop 2027 beside 2026).
-pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major: Option<u64>) -> Result<Build> {
+pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major: Option<u64>, allow_unverified: bool) -> Result<Build> {
     let app = ledger
         .app(app_id)
         .with_context(|| format!("unknown app id '{app_id}' (see `mudhut ledger`)"))?;
@@ -312,7 +318,32 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
     let all = candidates_from_doc(&doc, &app.sap, &platform);
     let pick = match major {
         None => all.first().cloned(),
-        Some(m) => all.iter().find(|c| crate::version::major(&c.product_version) == m).cloned(),
+        Some(m) => {
+            // Hold policy for a chosen yearly version: the newest verified build of that major;
+            // an unverified one only when the user confirmed it.
+            let of_major: Vec<&Candidate> = all.iter().filter(|c| crate::version::major(&c.product_version) == m).collect();
+            let list = crate::verified::load(false);
+            let verified = of_major.iter().find(|c| list.list.verified(&c.sap, &c.base(), &c.product_version).is_some());
+            match (verified, of_major.first()) {
+                (Some(v), _) => Some((*v).clone()),
+                (None, Some(newest)) if allow_unverified => Some((*newest).clone()),
+                (None, Some(newest)) => {
+                    return Err(crate::failure::Failure::new(
+                        "unverified",
+                        crate::failure::EX_FAIL,
+                        format!(
+                            "Neutron hasn't verified {} {} yet. It may not open, or parts of it may not work. To install it anyway, confirm (--allow-unverified).",
+                            app.name.trim_end_matches(" (experimental)"),
+                            crate::version::label(&newest.product_version)
+                        ),
+                    )
+                    .with("prefix_changed", false)
+                    .with("to", newest.product_version.clone())
+                    .into())
+                }
+                (None, None) => None,
+            }
+        }
     };
     let c = match (pick, major) {
         (Some(c), _) => c,
@@ -320,11 +351,17 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
         (None, Some(m)) => {
             let mut majors: Vec<u64> = all.iter().map(|c| crate::version::major(&c.product_version)).collect();
             majors.dedup();
-            bail!(
-                "Adobe does not offer {} version {m}. Versions offered: {}",
-                app.name,
-                majors.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+            return Err(crate::failure::Failure::new(
+                "version-not-offered",
+                crate::failure::EX_FAIL,
+                format!(
+                    "Adobe does not offer {} version {m}. Versions offered: {}.",
+                    app.name.trim_end_matches(" (experimental)"),
+                    majors.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", ")
+                ),
             )
+            .with("prefix_changed", false)
+            .into());
         }
     };
     Ok(c.to_build(app_id))

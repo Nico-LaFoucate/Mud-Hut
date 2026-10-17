@@ -49,6 +49,8 @@ pub struct UpdateOpts {
     pub no_snapshot: bool,
     pub dry_run: bool,
     pub keep_download: bool,
+    /// Products dirs holding packages to reuse (an offline package, a kept download).
+    pub sources: Vec<PathBuf>,
 }
 
 /// One app's planned update.
@@ -194,20 +196,6 @@ fn manifest(ledger: &crate::ledger::Ledger, c: &Candidate) -> Result<(crate::fee
     })
 }
 
-/// Only the packages whose version differs from what is installed (an update downloads the
-/// changed packages only; HDPIM keeps the unchanged ones).
-fn changed_only(plan: &DownloadPlan, installed: &BTreeMap<String, String>) -> DownloadPlan {
-    let mut p = DownloadPlan { packages: vec![], total_bytes: 0, ..plan_shallow(plan) };
-    for pk in &plan.packages {
-        let same = installed.get(&pk.name).map(|v| crate::version::eq(v, &pk.version)).unwrap_or(false);
-        if !same || std::env::var_os("MUDHUT_UPDATE_STAGE_ALL").is_some() {
-            p.total_bytes += pk.bytes;
-            p.packages.push(pk.clone());
-        }
-    }
-    p
-}
-
 fn plan_shallow(p: &DownloadPlan) -> DownloadPlan {
     DownloadPlan {
         app: p.app.clone(),
@@ -256,10 +244,6 @@ fn plan_deps(ledger: &crate::ledger::Ledger, db: Option<&crate::hdpimdb::Db>, pl
         }
         let (m, raw) = manifest(ledger, &c)?;
         let dp = crate::feed::plan(&c.to_build(&d.sap.to_lowercase()), &m, "en_US");
-        let dp = match installed {
-            Some(p) => changed_only(&dp, &p.packages),
-            None => dp,
-        };
         keep.push(d.clone());
         changed.push((dp, raw));
     }
@@ -365,22 +349,22 @@ fn resolve_job(ledger: &crate::ledger::Ledger, db: Option<&crate::hdpimdb::Db>, 
     let opts = crate::updates::update_plan_opts(&job.app);
     let mut plan = crate::feed::plan_with(&job.target.to_build(&job.app.id), &m, "en_US", &opts);
     job.deps = plan_deps(ledger, db, &mut plan)?;
-    let staged = if job.adopt_needed {
-        match &job.adopt {
-            Some(a) => {
-                let (am, araw) = manifest(ledger, a)?;
-                let mut ap = crate::feed::plan(&a.to_build(&job.app.id), &am, "en_US");
-                // The adoption install names the same dependencies as the update.
-                ap.dependencies = plan.dependencies.clone();
-                let installed: BTreeMap<String, String> = ap.packages.iter().map(|p| (p.name.clone(), p.version.clone())).collect();
-                job.adopt_plan = Some((ap, araw));
-                changed_only(&plan, &installed)
-            }
-            None => plan_shallow(&plan),
+    // ⛔ EVERY planned package is staged, not only the changed ones. HDPIM's update mode checks
+    // that each package it selects is in the ESD folder, including an unchanged one it only
+    // needs "a DB operation" for: Photoshop 27.8 -> 27.11 with only the changed packages staged
+    // failed with "Package Zip './PHSP\AdobePhotoshop27-SuperCafModels.zip' is not present in
+    // ESD Mode" (error 182; lab, AE2026 copy, 2026-10-16). An unchanged package that is already
+    // on disk under another build is reused instead of downloaded (fetch_packages).
+    if job.adopt_needed {
+        if let Some(a) = &job.adopt {
+            let (am, araw) = manifest(ledger, a)?;
+            let mut ap = crate::feed::plan(&a.to_build(&job.app.id), &am, "en_US");
+            // The adoption install names the same dependencies as the update.
+            ap.dependencies = plan.dependencies.clone();
+            job.adopt_plan = Some((ap, araw));
         }
-    } else {
-        changed_only(&plan, &job.app.packages)
-    };
+    }
+    let staged = plan_shallow(&plan);
     job.download_bytes = staged.total_bytes
         + job.adopt_plan.as_ref().map(|(p, _)| p.total_bytes).unwrap_or(0)
         + job.deps.iter().map(|(d, _)| d.total_bytes).sum::<u64>();
@@ -490,6 +474,13 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     }
     // A closing terminal must not end an update half-way.
     unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+    if !o.sources.is_empty() {
+        let mut v: Vec<PathBuf> = std::env::var_os("MUDHUT_PACKAGE_SOURCES").map(|x| std::env::split_paths(&x).collect()).unwrap_or_default();
+        v.extend(o.sources.iter().cloned());
+        if let Ok(j) = std::env::join_paths(v) {
+            std::env::set_var("MUDHUT_PACKAGE_SOURCES", j);
+        }
+    }
 
     let _lock = if o.dry_run { None } else { Some(state::lock(prefix, "update")?) };
     if !o.dry_run {

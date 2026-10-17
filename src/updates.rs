@@ -108,6 +108,9 @@ fn plan_for(ledger: &crate::ledger::Ledger, c: &Candidate, app_id: &str, opts: &
 /// Download size for an update (None when a manifest is not available).
 pub fn download_bytes(ledger: &crate::ledger::Ledger, a: &InstalledApp, target: &Candidate, adopt_from: Option<&Candidate>, offline: bool) -> Option<u64> {
     let t = plan_for(ledger, target, &a.id, &update_plan_opts(a), offline)?;
+    // HDPIM's update needs every package of the build in its download folder (unchanged ones
+    // too), so the download is the whole planned build; packages already on disk under another
+    // build are reused when the update runs.
     if a.managed_by == Managed::AdoptNeeded {
         // Adoption installs the copied build through Adobe's installer first (the whole build),
         // then updates it.
@@ -116,9 +119,15 @@ pub fn download_bytes(ledger: &crate::ledger::Ledger, a: &InstalledApp, target: 
             return Some(t.total_bytes);
         }
         let f = plan_for(ledger, from, &a.id, &crate::feed::PlanOpts::default(), offline)?;
-        let installed = f.packages.iter().map(|p| (p.name.clone(), p.version.clone())).collect();
-        return Some(f.total_bytes + changed_bytes(&t, &installed));
+        let same: u64 = t.packages.iter().filter(|p| f.packages.iter().any(|q| q.path == p.path)).map(|p| p.bytes).sum();
+        return Some(f.total_bytes + t.total_bytes - same);
     }
+    Some(t.total_bytes)
+}
+
+/// Bytes of the packages whose version changed (what is new in the build).
+pub fn changed_download_bytes(ledger: &crate::ledger::Ledger, a: &InstalledApp, target: &Candidate, offline: bool) -> Option<u64> {
+    let t = plan_for(ledger, target, &a.id, &update_plan_opts(a), offline)?;
     Some(changed_bytes(&t, &a.packages))
 }
 
@@ -203,6 +212,7 @@ fn check_prefix(
                 "label": crate::version::label(&t.product_version),
                 "verified": entry.is_some(),
                 "download_bytes": download_bytes(ledger, a, t, adopt_from.as_ref(), offline),
+                "changed_bytes": changed_download_bytes(ledger, a, t, offline),
                 "can_update": blocked_reason.is_none(),
                 "blocked_reason": blocked_reason,
                 "adopt": a.managed_by == Managed::AdoptNeeded,
