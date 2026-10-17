@@ -1,9 +1,9 @@
 {
  "schema": 1,
- "serial": 1,
- "updated": "2026-10-16T21:00:00Z",
- "draft": true,
- "note": "DRAFT for the operator to confirm (2026-10-16): seeded from the Adobe builds installed in the clean-room release-test prefixes (/var/tmp/neutron-release-test, read-only reads of caps/hdpim.db). min_runtime is unknown for every entry. Not included: LrcRelease's apps (copied without Adobe's records: Animate 24.0.10, Audition 26.5, InDesign 21.6, Lightroom Classic 15.6, Premiere Pro 25.3 by their AMT records).",
+ "serial": 2,
+ "updated": "2026-10-17T16:00:00Z",
+ "draft": false,
+ "note": "Adobe builds verified on Neutron. Builds not listed here are offered as \"not yet verified\".",
  "default_policy": "hold",
  "apps": {
   "AEFT": {
