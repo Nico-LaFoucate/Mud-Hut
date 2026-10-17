@@ -724,6 +724,7 @@ pub fn run_hdpim(
         .arg(&driver_win)
         .arg("2400") // pump-second ceiling
         .arg(op.verb())
+        .arg(&expect.sap) // the host waits for HDPIM to release THIS product's lock
         .current_dir(cwd)
         .env("WINEDLLOVERRIDES", std::env::var("MUDHUT_HOST_DLLOVERRIDES").unwrap_or_else(|_| HOST_DLL_OVERRIDES.into()));
     // Tie the host's life to ours: if Mud Hut is killed, the decrypt must not keep
@@ -814,13 +815,24 @@ pub fn run_hdpim(
         // HDPIM says when it is finished — "All N tasks completed." from its
         // ProgressManager. Use that, and then check its record (below).
         if log.contains("tasks completed.") {
-            if op == Op::Uninstall {
-                // After an uninstall HDPIM runs a short repair of what remains
-                // (`ccd.hd.repair_after_uninstall`); let it finish.
-                std::thread::sleep(Duration::from_secs(5));
+            // ⛔ NOT the end: HDPIM still writes its install record for the product and every
+            // dependency, then releases the product lock. Killing the host here cut that record
+            // short (2026-10-17: Animate's update failed record-mismatch every time; Photoshop's
+            // later dependencies had no record). The host now ends the session itself once HDPIM
+            // releases the lock (hdpimTerminateSession waits for HDPIM's threads) -- wait for it.
+            em.progress(op.verb(), 90, "Adobe's installer is writing its records");
+            let finish_by = Instant::now() + Duration::from_secs(600);
+            loop {
+                if child.try_wait().context("polling hdpim_host")?.is_some() {
+                    break;
+                }
+                if Instant::now() >= finish_by {
+                    em.note("Adobe's installer did not finish its records within 10 minutes; stopping it");
+                    stop(&mut child);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(500));
             }
-            em.progress(op.verb(), 90, "all HDPIM tasks completed — stopping host");
-            stop(&mut child);
             break;
         }
 

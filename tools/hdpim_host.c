@@ -12,7 +12,16 @@
  *   i686-w64-mingw32-gcc -O2 -s -o hdpim_host.exe hdpim_host.c host_res.o -lole32
  *
  * Usage:
- *   hdpim_host.exe <HDPIM.dll path> <Driver.xml path> [wait_seconds] [install|update|uninstall]
+ *   hdpim_host.exe <HDPIM.dll path> <Driver.xml path> [wait_seconds] [install|update|uninstall] [SAP]
+ *
+ * WHEN IT STOPS. HDPIM's "All N tasks completed." is NOT the end of the workflow: after it HDPIM
+ * still writes its install record ("Updating DB entries for SapCode=…" for the product and every
+ * dependency) and only then logs "Released product specific lock for SAPCode: <SAP>". The caller
+ * used to kill the host on "tasks completed.", which cut that record short (2026-10-17: Animate's
+ * update lost its record every time; Photoshop's lost its later dependencies' records). The host
+ * now waits for that release line (for SAP when given), or for HDPIM's workflow error, then calls
+ * hdpimTerminateSession -- which itself waits for HDPIM's worker threads -- and exits on its own.
+ * Fallbacks: 300 s after "tasks completed." without a release line, or the pump ceiling.
  *   CWD is set to the Driver.xml directory so EsdDirectory "./PHSP" resolves.
  *   The verb picks the export (default install). All three take the same arguments
  *   (HDPIM 6.5.0.348 decompile: hdpimInstallProduct / hdpimInstallUpdate /
@@ -54,6 +63,12 @@ static void logline(const char* fmt, ...) {
     fprintf(stderr, "\n"); fflush(stderr);
 }
 
+/* Workflow state, set by my_logger (HDPIM's threads), read by main's pump loop. */
+static volatile LONG g_completed_tick = 0;   /* GetTickCount() when "tasks completed." was seen */
+static volatile LONG g_released = 0;         /* "Released product specific lock" for g_sap */
+static volatile LONG g_error = 0;            /* HDPIM's workflow error */
+static wchar_t g_sap[32] = L"";              /* product SAP code (argv[5]); empty = any */
+
 /* HDPIM's log callback. __cdecl + variadic; args are WIDE (UTF-16LE):
  * (level, L"HDPIM", L"HDPIMSessionManager", wstr, wstr, wfmt, [vararg...]). */
 static void __cdecl my_logger(int level, const wchar_t* a, const wchar_t* b,
@@ -68,6 +83,17 @@ static void __cdecl my_logger(int level, const wchar_t* a, const wchar_t* b,
     fprintf(stderr, "  HDPIM[%d] %ls|%ls :: %ls\n",
             level, a ? a : L"", b ? b : L"", wbuf);
     fflush(stderr);
+    /* Called from HDPIM's worker threads: just set flags, the main thread decides. */
+    if (wcsstr(wbuf, L"tasks completed.") && !g_completed_tick)
+        InterlockedExchange(&g_completed_tick, (LONG)(GetTickCount() | 1));
+    if (wcsstr(wbuf, L"Error occurred in install product workflow with error code"))
+        InterlockedExchange(&g_error, 1);
+    if (wcsstr(wbuf, L"Released product specific lock for SAPCode:")) {
+        const wchar_t* code = wcsstr(wbuf, L"SAPCode:") + 8;
+        while (*code == L' ') code++;
+        if (!g_sap[0] || !wcsncmp(code, g_sap, wcslen(g_sap)))
+            InterlockedExchange(&g_released, 1);
+    }
 }
 
 /* arg3 of hdpimInstallProduct is a CALLBACK FUNCTION POINTER (HDPIM does
@@ -111,6 +137,12 @@ static void pump_for(int seconds) {
             logline("[host] alive, elapsed %ds / %ds", el, seconds);
             last = el;
         }
+        if (g_released) { logline("[host] HDPIM released the product lock: workflow finished"); return; }
+        if (g_error) { logline("[host] HDPIM reported a workflow error"); return; }
+        if (g_completed_tick && GetTickCount() - (DWORD)g_completed_tick > 300 * 1000) {
+            logline("[host] no lock release 300s after tasks completed; finishing anyway");
+            return;
+        }
     }
 }
 
@@ -123,6 +155,7 @@ int main(int argc, char** argv) {
     const char* driver_path = argv[2];
     int wait_secs = (argc >= 4) ? atoi(argv[3]) : 2400;
     const char* verb = (argc >= 5) ? argv[4] : "install";
+    if (argc >= 6) MultiByteToWideChar(CP_UTF8, 0, argv[5], -1, g_sap, 31);
     const char* export_name =
         !strcmp(verb, "install")   ? "hdpimInstallProduct" :
         !strcmp(verb, "update")    ? "hdpimInstallUpdate" :
@@ -199,5 +232,5 @@ int main(int argc, char** argv) {
     logline("[host] hdpimTerminateSession -> %d", r);
 
     logline("[host] done");
-    return 0;
+    return g_error ? 10 : (g_released ? 0 : 11);
 }
