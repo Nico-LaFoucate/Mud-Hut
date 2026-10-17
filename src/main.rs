@@ -31,8 +31,10 @@ mod iso;
 mod net;
 mod offline;
 mod pe;
+mod snapshot;
 mod source;
 mod state;
+mod update;
 mod updates;
 mod verified;
 mod version;
@@ -117,6 +119,54 @@ enum Cmd {
         /// Answer at once from what is cached (no network), for a first paint.
         #[arg(long)]
         cached: bool,
+    },
+    /// Update Adobe apps in a prefix in place (same yearly version), with a rollback copy kept
+    /// first. Refuses (exit 3) while any Adobe app runs in the prefix.
+    Update {
+        /// Apps to update (e.g. photoshop premiere). Or --all.
+        apps: Vec<String>,
+        #[arg(long)]
+        prefix: String,
+        /// Every app in the prefix that has an update.
+        #[arg(long)]
+        all: bool,
+        /// The exact build to move to (what check-updates showed), e.g. 26.5.2.5.
+        #[arg(long)]
+        to: Option<String>,
+        /// Allow a build Neutron has not verified yet (after the user confirmed it).
+        #[arg(long)]
+        allow_unverified: bool,
+        /// Do not keep a rollback copy (saves disk space; a failed update then cannot be undone).
+        #[arg(long)]
+        no_snapshot: bool,
+        /// Plan and report what would be downloaded and done, changing nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Keep the downloaded packages afterwards.
+        #[arg(long)]
+        keep_download: bool,
+    },
+    /// Put back the version an update replaced (newest update first).
+    Rollback {
+        #[arg(long)]
+        prefix: String,
+        /// Only this app's latest update.
+        #[arg(long)]
+        app: Option<String>,
+        /// A specific snapshot (see `mudhut snapshots`).
+        #[arg(long)]
+        snapshot: Option<String>,
+    },
+    /// List the rollback copies kept in a prefix; --prune removes them.
+    Snapshots {
+        #[arg(long)]
+        prefix: String,
+        /// Remove kept copies (an update cut off half-way keeps its copy regardless).
+        #[arg(long)]
+        prune: bool,
+        /// With --prune: keep this many newest copies per app.
+        #[arg(long, default_value_t = 0)]
+        keep: usize,
     },
     /// Resolve + download an app from Adobe (feed -> buildGuid -> manifest -> plan
     /// -> fetch+verify). Without --dest, reports the plan and downloads nothing.
@@ -236,6 +286,12 @@ fn main() -> ExitCode {
         }),
         Cmd::Ledger => ledger::cmd_ledger(&em),
         Cmd::Inventory { prefix } => inventory::cmd_inventory(&em, &prefix),
+        Cmd::Update { apps, prefix, all, to, allow_unverified, no_snapshot, dry_run, keep_download } => update::cmd_update(
+            &em,
+            update::UpdateOpts { prefix, apps, all, to, allow_unverified, no_snapshot, dry_run, keep_download },
+        ),
+        Cmd::Rollback { prefix, app, snapshot } => update::cmd_rollback(&em, &prefix, app.as_deref(), snapshot.as_deref()),
+        Cmd::Snapshots { prefix, prune, keep } => update::cmd_snapshots(&em, &prefix, prune, keep),
         Cmd::CheckUpdates { prefix, all_prefixes, app, max_age, refresh, offline, cached } => {
             updates::cmd_check_updates(&em, updates::CheckOpts { prefixes: prefix, all_prefixes, apps: app, max_age, refresh, offline, cached })
         }

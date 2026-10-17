@@ -71,11 +71,14 @@ pub struct Emitter {
     /// The app the current events are about (an update names it on every line, so Collider can
     /// put progress on the right card).
     app: Mutex<Option<String>>,
+    /// While set, every progress event carries this stage (an update reports the install
+    /// engine's own steps as its `apply` stage).
+    stage: Mutex<Option<String>>,
 }
 
 impl Emitter {
     pub fn new(json: bool) -> Self {
-        Emitter { json, log: Mutex::new(None), app: Mutex::new(None) }
+        Emitter { json, log: Mutex::new(None), app: Mutex::new(None), stage: Mutex::new(None) }
     }
 
     pub fn is_json(&self) -> bool {
@@ -94,12 +97,19 @@ impl Emitter {
         *self.app.lock().unwrap_or_else(|e| e.into_inner()) = app.map(str::to_string);
     }
 
+    /// Report every following progress event under `stage` (None: as the caller names it).
+    pub fn set_stage(&self, stage: Option<&str>) {
+        *self.stage.lock().unwrap_or_else(|e| e.into_inner()) = stage.map(str::to_string);
+    }
+
     fn current_app(&self) -> Option<String> {
         self.app.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// A progress tick. `pct` is 0..=100; `stage` is a short machine token.
     pub fn progress(&self, stage: &str, pct: u8, msg: &str) {
+        let over = self.stage.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let stage = over.as_deref().unwrap_or(stage);
         let mut v = json!({"event":"progress","stage":stage,"pct":pct,"msg":msg});
         if let Some(app) = self.current_app() {
             v["app"] = json!(app);

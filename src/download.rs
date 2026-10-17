@@ -104,6 +104,9 @@ pub fn install(
         return Ok(());
     }
 
+    // Hold the prefix for the whole install: `neutron launch` refuses and `neutron update`
+    // skips it meanwhile, and a second Mud Hut run waits its turn.
+    let _lock = crate::state::lock(prefix, "install")?;
     // Refuse before downloading gigabytes into a prefix that is in use (the engine checks again
     // right before it starts).
     crate::hdpim::refuse_if_busy(prefix)?;

@@ -191,6 +191,8 @@ pub fn install(
         return Ok(());
     }
 
+    let _lock = crate::state::lock(prefix, "install")?;
+
     // WHERE THE DRIVER XML GOES, and why it is a choice rather than a constraint.
     //
     // HDPIM resolves a RELATIVE <EsdDirectory> (`./PHSP`) against the directory the

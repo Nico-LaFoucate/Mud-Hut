@@ -114,6 +114,8 @@ fn run_inner(em: &Emitter, prefix: &Path, acq: Acquisition, dry_run: bool) -> Re
     // Stage into drive_c preserving the Windows layout.
     fs::create_dir_all(prefix.join("drive_c"))
         .with_context(|| format!("cannot create prefix at {}", prefix.display()))?;
+    let _lock = crate::state::lock(prefix, "install")?;
+    crate::hdpim::refuse_if_busy(prefix)?;
 
     let mut copied = 0u64;
     let mut last_pct = u8::MAX;
@@ -174,6 +176,31 @@ pub fn provision(prefix: &Path) -> Result<()> {
         .context("could not run `neutron` (is the Neutron runtime installed?)")?;
     if !status.success() {
         bail!("`neutron prefix provision` exited with {status}");
+    }
+    Ok(())
+}
+
+/// `neutron prefix provision <prefix>` with its output in `<prefix>/.mudhut/logs/` instead of
+/// our stderr. An update must not depend on a terminal or pipe that may already be gone: the CLI
+/// treats a broken stderr as "the reader left" and returns early, which would skip provisioning
+/// without a word.
+pub fn provision_quiet(prefix: &Path) -> Result<()> {
+    let dir = crate::state::logs_dir(prefix);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let log = dir.join(format!("provision-{}.log", crate::clock::stamp(crate::clock::now_secs())));
+    let f = fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+    let f2 = f.try_clone()?;
+    let status = Command::new("neutron")
+        .arg("prefix")
+        .arg("provision")
+        .arg(prefix)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(f))
+        .stderr(Stdio::from(f2))
+        .status()
+        .context("could not run `neutron` (is the Neutron runtime installed?)")?;
+    if !status.success() {
+        bail!("`neutron prefix provision` exited with {status} (log: {})", log.display());
     }
     Ok(())
 }

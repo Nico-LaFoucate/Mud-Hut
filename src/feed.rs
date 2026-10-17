@@ -135,6 +135,9 @@ pub struct Package {
     /// Binary deltas from the one or two previous package versions.
     #[serde(rename = "DeltaPackages", default)]
     pub deltas: Vec<DeltaPackage>,
+    /// Bytes once unpacked (for the free-space check before an update).
+    #[serde(rename = "ExtractSize", default)]
+    pub extract_size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -206,6 +209,8 @@ pub struct PlannedPackage {
     pub version: String,
     /// The module this package belongs to, if any.
     pub module: Option<String>,
+    /// Unpacked size (0 when the manifest does not say).
+    pub extract_bytes: u64,
     pub kind: String,
     pub bytes: u64,
     pub path: String,
@@ -437,6 +442,7 @@ pub fn plan_with(build: &Build, manifest: &Manifest, language: &str, opts: &Plan
             name: p.name.clone(),
             version: p.version.clone(),
             module: module.map(|m| m.id.clone()),
+            extract_bytes: p.extract_size,
             kind: p.kind.clone(),
             bytes: p.download_size,
             path: p.path.clone(),

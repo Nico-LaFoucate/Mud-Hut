@@ -23,7 +23,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::feed::Candidate;
