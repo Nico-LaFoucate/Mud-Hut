@@ -457,12 +457,18 @@ fn apply_job(em: &Emitter, cfg: &crate::hdpim::Config, prefix: &Path, job: &Job)
 
 /// Roll back after a failure: end the wine session, put the snapshot back (all three hives),
 /// re-provision. Returns notes; Err = the rollback itself failed.
+/// The wine this prefix is stamped for (provision keeps the prefix on it).
+fn stamped_wine(prefix: &Path) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    crate::hdpim::runtime_for_prefix(&home, prefix)
+}
+
 fn auto_rollback(em: &Emitter, prefix: &Path, dir: &Path, meta: &mut crate::snapshot::Meta) -> Result<Vec<String>> {
     em.progress("rollback", 10, "putting the previous version back");
     quiesce(em, prefix)?;
     let notes = crate::snapshot::restore(prefix, dir, meta, crate::snapshot::HIVES)?;
     em.progress("rollback", 80, "neutron prefix provision");
-    let _ = crate::install::provision_quiet(prefix);
+    let _ = crate::install::provision_quiet(prefix, stamped_wine(prefix).as_deref());
     em.progress("rollback", 100, "previous version restored");
     Ok(notes)
 }
@@ -746,7 +752,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     if changed_any {
         set_progress(prefix, &mut st, "provision");
         em.progress("provision", 50, "neutron prefix provision");
-        provisioned = json!(crate::install::provision_quiet(prefix).is_ok());
+        provisioned = json!(crate::install::provision_quiet(prefix, cfg.as_ref().map(|c| c.wine.as_path())).is_ok());
     }
     if !o.keep_download {
         for j in &ready {
@@ -910,7 +916,7 @@ pub fn cmd_rollback(em: &Emitter, prefix_s: &str, app: Option<&str>, snapshot: O
         }
     };
     em.progress("provision", 60, "neutron prefix provision");
-    let provisioned = crate::install::provision_quiet(prefix).is_ok();
+    let provisioned = crate::install::provision_quiet(prefix, stamped_wine(prefix).as_deref()).is_ok();
     // Check the program file is the old one again.
     let mut ok = true;
     let mut msg = String::new();

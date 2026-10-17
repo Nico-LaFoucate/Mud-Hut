@@ -184,13 +184,22 @@ pub fn provision(prefix: &Path) -> Result<()> {
 /// our stderr. An update must not depend on a terminal or pipe that may already be gone: the CLI
 /// treats a broken stderr as "the reader left" and returns early, which would skip provisioning
 /// without a word.
-pub fn provision_quiet(prefix: &Path) -> Result<()> {
+///
+/// `wine`: run provision with THIS runtime (`$NEUTRON_WINE`, which the CLI takes first). An
+/// update passes the prefix's own stamped runtime, so updating an app never moves the prefix to
+/// another runtime (that is `neutron update`'s job). Measured without it: a copy stamped for
+/// 11.10-132 ended its update stamped for the CLI's 11.10-130.
+pub fn provision_quiet(prefix: &Path, wine: Option<&Path>) -> Result<()> {
     let dir = crate::state::logs_dir(prefix);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let log = dir.join(format!("provision-{}.log", crate::clock::stamp(crate::clock::now_secs())));
     let f = fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
     let f2 = f.try_clone()?;
-    let status = Command::new("neutron")
+    let mut cmd = Command::new("neutron");
+    if let Some(w) = wine {
+        cmd.env("NEUTRON_WINE", w);
+    }
+    let status = cmd
         .arg("prefix")
         .arg("provision")
         .arg(prefix)
