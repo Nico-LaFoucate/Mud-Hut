@@ -255,6 +255,16 @@ fn plan_deps(ledger: &crate::ledger::Ledger, plan: &mut DownloadPlan) -> Result<
     Ok(deps)
 }
 
+/// Yearly versions sit side by side, and `--to` names one build of one of them: the install of
+/// that build's yearly version is the one to update, the others of the same app are left alone.
+/// (With no install of that year, nothing is skipped and planning explains the build.)
+fn other_year_of_target(apps: &[InstalledApp], a: &InstalledApp, to: Option<&str>) -> bool {
+    let Some(want) = to else { return false };
+    let year_of = |x: &InstalledApp| x.version.as_deref().map(crate::version::major);
+    let target = crate::version::major(want);
+    year_of(a) != Some(target) && apps.iter().any(|x| x.id == a.id && year_of(x) == Some(target))
+}
+
 fn plan_job(
     ledger: &crate::ledger::Ledger,
     verified: &crate::verified::List,
@@ -550,7 +560,12 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     let inv = crate::inventory::inventory(&prefix_s)?;
     let ledger = crate::ledger::Ledger::load_quick(em, false)?;
     let vl = crate::verified::load(false);
-    let wanted: Vec<&InstalledApp> = inv.apps.iter().filter(|a| o.all || o.apps.contains(&a.id)).collect();
+    let wanted: Vec<&InstalledApp> = inv
+        .apps
+        .iter()
+        .filter(|a| o.all || o.apps.contains(&a.id))
+        .filter(|a| !other_year_of_target(&inv.apps, a, o.to.as_deref()))
+        .collect();
     for want in &o.apps {
         if !inv.apps.iter().any(|a| &a.id == want) {
             return Err(Failure::new("not-installed", EX_FAIL, format!("{} is not installed in this prefix.", name_of(want))).with("prefix_changed", false).into());
@@ -991,4 +1006,30 @@ pub fn cmd_snapshots(em: &Emitter, prefix_s: &str, prune: bool, keep: usize) -> 
     }
     em.result(&json!({"ok": true, "prefix": prefix_s, "snapshots": rows, "removed": removed}));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn installed(id: &str, year: u16, version: &str) -> InstalledApp {
+        InstalledApp {
+            id: id.into(), name: id.into(), sap: "PPRO".into(), dir: format!("Adobe {id} {year}"),
+            install_dir: "/x".into(), exe: None, year: Some(year), version: Some(version.into()), exact: true,
+            codex: None, base: None, build_guid: None, managed_by: Managed::Hdpim, consistent: true,
+            sources: Default::default(), packages: Default::default(), modules: vec![], notes: vec![],
+        }
+    }
+
+    #[test]
+    fn a_pinned_build_updates_only_the_install_of_its_year() {
+        let (y25, y26) = (installed("premiere", 2025, "25.6.4.1"), installed("premiere", 2026, "26.3.0.12"));
+        let apps = vec![y25.clone(), y26.clone(), installed("aftereffects", 2025, "25.6.0.1")];
+        assert!(other_year_of_target(&apps, &y25, Some("26.5.2.3")), "the 2025 install is left alone");
+        assert!(!other_year_of_target(&apps, &y26, Some("26.5.2.3")));
+        assert!(!other_year_of_target(&apps, &y25, None), "without --to every install updates in its own year");
+        // No install of the build's year: nothing is skipped, planning explains the build.
+        assert!(!other_year_of_target(&apps, &y25, Some("27.0.0.40")));
+        assert!(!other_year_of_target(&apps, &apps[2], Some("26.5.2.3")), "another app's year does not count");
+    }
 }
