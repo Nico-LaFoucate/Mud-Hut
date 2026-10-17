@@ -13,8 +13,12 @@
 //! - the registry: `system.reg`, `user.reg`, `userdef.reg`.
 //! - the user's preference folders (Adobe marks them `isUserPreferences`): kept so they can be
 //!   put back if a failed update removed them; never written over newer ones.
-//! Not included: documents, projects, media caches, licensing, downloaded AI models outside the
-//! app's own folders.
+//! Not included: documents, projects, media caches, downloaded AI models outside the app's own
+//! folders, and SIGN-IN. Adobe keeps the signed-in account in Wine's Credential Manager (inside
+//! `user.reg`) and in its own files under `AppData\Local\Adobe` (NGL, OOBE, licflags). Those files
+//! are never in a snapshot, and whenever `user.reg` is put back, the Credential Manager sections
+//! currently in the prefix are kept (`keep_current_sections`), so a rollback can never sign the
+//! user out or bring back an older account.
 //!
 //! How: on btrfs and XFS every file is a reflink (`FICLONE`), so a snapshot of a 10 GB app takes
 //! seconds and almost no space until the update rewrites files. Elsewhere it is a real copy when
@@ -441,6 +445,49 @@ pub fn create(prefix: &Path, app: &str, sap: &str, from: Option<&str>, to: Optio
     Ok((dir, meta))
 }
 
+/// Where Wine keeps Windows Credential Manager entries (Adobe's signed-in account among them),
+/// as a section header prefix in `user.reg`.
+pub const CREDENTIAL_MANAGER: &[u8] = b"[Software\\\\Wine\\\\Credential Manager";
+
+/// A Wine registry file with every section whose header starts with `prefix` taken from
+/// `current` instead of `saved`. Sections are a header line `[Key\\Path] <time>` plus the lines
+/// up to the next header; Wine reads them in any order. Bytes are kept as they are.
+pub fn keep_current_sections(saved: &[u8], current: &[u8], prefix: &[u8]) -> Vec<u8> {
+    fn sections(text: &[u8]) -> (Vec<u8>, Vec<(bool, Vec<u8>)>) {
+        // (preamble before the first section, [(is_match, section bytes)])
+        let mut pre = Vec::new();
+        let mut out: Vec<(bool, Vec<u8>)> = Vec::new();
+        for line in text.split_inclusive(|&b| b == b'\n') {
+            if line.first() == Some(&b'[') {
+                out.push((false, Vec::new()));
+            }
+            match out.last_mut() {
+                Some((_, sec)) => sec.extend_from_slice(line),
+                None => pre.extend_from_slice(line),
+            }
+        }
+        (pre, out)
+    }
+    let (pre, saved_secs) = sections(saved);
+    let (_, cur_secs) = sections(current);
+    let is_match = |sec: &[u8]| sec.starts_with(prefix);
+    let mut out = pre;
+    for (_, sec) in saved_secs.iter() {
+        if !is_match(sec) {
+            out.extend_from_slice(sec);
+        }
+    }
+    for (_, sec) in cur_secs.iter() {
+        if is_match(sec) {
+            if !out.ends_with(b"\n") {
+                out.push(b'\n');
+            }
+            out.extend_from_slice(sec);
+        }
+    }
+    out
+}
+
 /// Put a snapshot back. `hives`: which registry files to restore (an automatic rollback restores
 /// all three; a later, manual one keeps `user.reg`, the user's own settings since the update).
 /// The prefix's wine session must be ended. Consumes the snapshot's trees (they are renamed
@@ -481,7 +528,17 @@ pub fn restore(prefix: &Path, dir: &Path, meta: &mut Meta, hives: &[&str]) -> Re
     }
     for h in hives {
         let s = dir.join("hives").join(h);
-        if s.is_file() {
+        if !s.is_file() {
+            continue;
+        }
+        if *h == "user.reg" {
+            // Sign-in is never rolled back: keep the Credential Manager sections that are in the
+            // prefix now (an account signed in after the snapshot stays signed in).
+            let snap = fs::read(&s).with_context(|| format!("reading the saved {h}"))?;
+            let cur = fs::read(prefix.join(h)).unwrap_or_default();
+            let merged = keep_current_sections(&snap, &cur, CREDENTIAL_MANAGER);
+            fs::write(prefix.join(h), merged).with_context(|| format!("restoring {h}"))?;
+        } else {
             fs::copy(&s, prefix.join(h)).with_context(|| format!("restoring {h}"))?;
         }
     }
@@ -637,6 +694,26 @@ mod tests {
         assert_eq!(fs::read(p.join(prefs).join("prefs.txt")).unwrap(), b"changed after the update");
         assert_eq!(fs::read(p.join("user.reg")).unwrap(), b"user settings since");
         let _ = fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn hive_restore_keeps_the_current_sign_in() {
+        let saved = b"WINE REGISTRY Version 2\n;; All keys relative to \\\\User\\\\S-1\n\n#arch=win64\n\n\
+[Software\\\\Adobe\\\\Photoshop] 1\n\"Pref\"=\"old\"\n\n\
+[Software\\\\Wine\\\\Credential Manager] 1\n\"EncryptionKey\"=hex:01\n\n";
+        let current = b"WINE REGISTRY Version 2\n\n\
+[Software\\\\Adobe\\\\Photoshop] 2\n\"Pref\"=\"new\"\n\n\
+[Software\\\\Wine\\\\Credential Manager] 2\n\"EncryptionKey\"=hex:01\n\n\
+[Software\\\\Wine\\\\Credential Manager\\\\Generic: Adobe User Info(Part1)] 2\n\"Blob\"=hex:aa\n\n";
+        let m = super::keep_current_sections(saved, current, super::CREDENTIAL_MANAGER);
+        let t = String::from_utf8(m).unwrap();
+        // the saved app preference comes back...
+        assert!(t.contains("\"Pref\"=\"old\""), "{t}");
+        assert!(!t.contains("\"Pref\"=\"new\""), "{t}");
+        // ...but the sign-in is the current one, and is there exactly once
+        assert!(t.contains("Generic: Adobe User Info(Part1)] 2"), "{t}");
+        assert_eq!(t.matches("[Software\\\\Wine\\\\Credential Manager] ").count(), 1, "{t}");
+        assert!(t.starts_with("WINE REGISTRY Version 2\n;; All keys"), "{t}");
     }
 
     #[test]
