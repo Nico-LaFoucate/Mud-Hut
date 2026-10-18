@@ -322,7 +322,15 @@ pub fn cmd_check_updates(em: &Emitter, o: CheckOpts) -> Result<()> {
         prefixes.extend(neutron_prefixes()?);
     }
     if prefixes.is_empty() {
-        anyhow::bail!("pass --prefix (repeatable) or --all-prefixes");
+        if !o.all_prefixes {
+            anyhow::bail!("pass --prefix (repeatable) or --all-prefixes");
+        }
+        // No Neutron prefixes yet: nothing is installed, so there is nothing to check and no reason to ask Adobe.
+        if !em.is_json() {
+            outln!("No Neutron prefixes found.");
+        }
+        em.result(&json!({ "ok": true, "schema": 1, "checked_at": crate::clock::now(), "prefixes": [] }));
+        return Ok(());
     }
     let offline = o.offline || o.cached;
     let mode = if offline { Mode::Offline } else if o.refresh { Mode::Refresh } else { Mode::Normal };
