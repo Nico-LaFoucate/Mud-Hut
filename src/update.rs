@@ -521,6 +521,11 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         return Err(busy_failure(&busy, "Updating"));
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
+    if let Some(why) = crate::hdpim::stamp_problem(prefix) {
+        return Err(Failure::new("runtime-stamp", EX_DEP, format!("{why} Nothing was changed."))
+            .with("prefix_changed", false)
+            .into());
+    }
     if crate::hdpim::runtime_for_prefix(&home, prefix).is_none() {
         return Err(Failure::new(
             "runtime-missing",

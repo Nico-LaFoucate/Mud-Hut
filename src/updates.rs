@@ -231,6 +231,8 @@ fn check_prefix(
                 Some(format!("{} Updating needs every Adobe app in this prefix closed.", crate::busy::close_first_sentence(&names)))
             } else if !busy.installers.is_empty() {
                 Some("Adobe's installer is running in this prefix. Wait for it to finish.".into())
+            } else if let Some(why) = crate::hdpim::stamp_problem(p) {
+                Some(why)
             } else if runtime.is_none() {
                 Some("This prefix's Neutron runtime is not installed. Run `neutron update` first.".into())
             } else if let (Some(min), Some(have)) = (entry.and_then(|e| e.min_runtime.as_deref()), runtime.as_deref()) {

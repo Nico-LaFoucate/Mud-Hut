@@ -157,6 +157,30 @@ fn runtimes_dir(home: &Path) -> PathBuf {
         .join("neutron/runtimes")
 }
 
+/// Why this prefix's runtime stamp (`.update-timestamp`) cannot be used, as a sentence for the user; None when it
+/// holds a stamp. GitHub Neutron#29: the stamp could not be read, `runtime_for_prefix` returned None, and the user was
+/// told "This prefix's Neutron runtime is not installed. Run `neutron update` first" -- which `neutron update` cannot
+/// fix (it skips a prefix whose stamp it cannot read). `neutron doctor` names the file, its owner and the fix.
+pub(crate) fn stamp_problem(prefix: &Path) -> Option<String> {
+    match std::fs::read_to_string(prefix.join(".update-timestamp")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(
+            "This prefix has no runtime stamp (.update-timestamp), so Neutron can't tell which runtime it was set up for. \
+             Run `neutron doctor` to see what to do."
+                .into(),
+        ),
+        Err(_) => Some(
+            "Neutron can't read this prefix's runtime stamp (.update-timestamp). Run `neutron doctor` to see what to do."
+                .into(),
+        ),
+        Ok(raw) if !raw.chars().any(|c| c.is_ascii_digit()) => Some(format!(
+            "This prefix's runtime stamp (.update-timestamp) doesn't name a runtime. Run `neutron prefix provision {}` \
+             to set it up again.",
+            prefix.display()
+        )),
+        Ok(_) => None,
+    }
+}
+
 /// The installed runtime whose `share/wine/wine.inf` mtime equals the integer in
 /// `<prefix>/.update-timestamp` — i.e. the build this prefix was last booted on.
 /// Running any other build against it triggers a full `wine.inf` reinstall.
@@ -1212,5 +1236,31 @@ mod tests {
             assert_eq!(find_installed_exe(&prefix, &cat), Some(exe.clone()), "{}", cat.id);
             let _ = std::fs::remove_dir_all(&prefix);
         }
+    }
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::stamp_problem;
+
+    #[test]
+    fn each_unusable_stamp_gets_its_own_sentence() {
+        let dir = std::env::temp_dir().join(format!("mudhut-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let stamp = dir.join(".update-timestamp");
+        assert!(stamp_problem(&dir).unwrap().starts_with("This prefix has no runtime stamp"));
+        std::fs::write(&stamp, "disable\r\n").unwrap();
+        assert!(stamp_problem(&dir).unwrap().contains("neutron prefix provision"));
+        std::fs::write(&stamp, "1792427085\r\n").unwrap();
+        assert_eq!(stamp_problem(&dir), None);
+        // Unreadable: only meaningful when not running as root (root reads anything).
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&stamp).is_err() {
+            assert!(stamp_problem(&dir).unwrap().starts_with("Neutron can't read this prefix's runtime stamp"));
+        }
+        std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
