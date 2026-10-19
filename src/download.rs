@@ -351,10 +351,7 @@ pub(crate) fn write_application_json(products: &Path, sap: &str, raw: &str) -> R
 
 /// Default download-cache products dir: `~/.cache/mudhut/<SAP>-<ver>-<plat>/products`.
 pub(crate) fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .context("no HOME/XDG_CACHE_HOME for the download cache")?;
+    let base = xdg_dir("XDG_CACHE_HOME", ".cache").context("no HOME/XDG_CACHE_HOME for the download cache")?;
     Ok(base
         .join("mudhut")
         .join(format!("{}-{}-{}", plan.sap, plan.product_version, plan.platform))
@@ -464,10 +461,18 @@ const ACCC_URL: &str = "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/
 const ACCC_MD5: &str = "33a015138f2938690267a54e3a21f63e";
 
 pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
-    std::env::var_os(var)
+    xdg_from(std::env::var_os(var), std::env::var_os("HOME"), fallback).with_context(|| format!("no HOME/{var}"))
+}
+
+/// `value` when it is an absolute path, else `home/fallback`. The XDG Base Directory spec: unset OR
+/// EMPTY means the default, and a relative value is invalid and ignored. An empty XDG_DATA_HOME used
+/// to be taken as-is, so `mudhut accc` unpacked Adobe's package into the current directory (found in
+/// the 11.10-138 fresh-HOME test, 2026-10-19).
+fn xdg_from(value: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>, fallback: &str) -> Option<PathBuf> {
+    value
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
-        .with_context(|| format!("no HOME/{var}"))
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(fallback)))
 }
 
 /// The ACCCx `packages/` dir: `$MUDHUT_ACCC_PACKAGES`, else `accc-packages/` beside the binary
@@ -956,4 +961,21 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod xdg_tests {
+    use super::xdg_from;
+    use std::path::PathBuf;
+
+    #[test]
+    fn empty_or_relative_means_the_default() {
+        let home = Some("/home/u".into());
+        let want = Some(PathBuf::from("/home/u/.local/share"));
+        assert_eq!(xdg_from(Some("".into()), home.clone(), ".local/share"), want);
+        assert_eq!(xdg_from(Some("data".into()), home.clone(), ".local/share"), want);
+        assert_eq!(xdg_from(None, home.clone(), ".local/share"), want);
+        assert_eq!(xdg_from(Some("/srv/data".into()), home, ".local/share"), Some(PathBuf::from("/srv/data")));
+        assert_eq!(xdg_from(Some("".into()), None, ".local/share"), None);
+    }
 }

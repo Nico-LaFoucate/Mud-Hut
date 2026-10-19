@@ -33,8 +33,10 @@ impl Drop for Mounted {
 
 /// Where mounts are recorded so they can be reclaimed after an abnormal exit.
 fn records_dir() -> PathBuf {
+    // An empty or relative XDG_RUNTIME_DIR is invalid (XDG spec): fall back rather than write relative to the cwd.
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .unwrap_or_else(std::env::temp_dir);
     base.join("mudhut-mounts")
 }
