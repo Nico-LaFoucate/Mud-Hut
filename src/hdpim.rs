@@ -117,7 +117,7 @@ pub(crate) fn resolve_wine(prefix: Option<&Path>) -> Option<PathBuf> {
     //    Non-numeric suffixes (perf-test, gpufix, diag, overhang…) are experiment builds
     //    and are now excluded entirely rather than merely ranked.
     if let Some(home) = &home {
-        let base = home.join(".local/share/neutron/runtimes");
+        let base = runtimes_dir(home);
         if let Ok(rd) = std::fs::read_dir(&base) {
             let mut cands: Vec<((u32, u32, u32), PathBuf)> = rd
                 .flatten()
@@ -147,6 +147,16 @@ fn parse_runtime_version(dir_name: &str) -> Option<(u32, u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?, rev.parse().ok()?))
 }
 
+/// Where the Neutron CLI installs runtimes: $XDG_DATA_HOME/neutron/runtimes, else
+/// HOME/.local/share/neutron/runtimes (the CLI's NEUTRON_RUNTIMES_DIR, same rule). This was hardcoded to
+/// HOME/.local/share until 2026-10-19, so with a non-default XDG_DATA_HOME Mud Hut found no runtime and
+/// blocked updates with "This prefix's Neutron runtime is not installed".
+fn runtimes_dir(home: &Path) -> PathBuf {
+    crate::download::xdg_from(std::env::var_os("XDG_DATA_HOME"), Some(home.as_os_str().to_owned()), ".local/share")
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join("neutron/runtimes")
+}
+
 /// The installed runtime whose `share/wine/wine.inf` mtime equals the integer in
 /// `<prefix>/.update-timestamp` — i.e. the build this prefix was last booted on.
 /// Running any other build against it triggers a full `wine.inf` reinstall.
@@ -155,7 +165,7 @@ pub(crate) fn runtime_for_prefix(home: &Path, prefix: &Path) -> Option<PathBuf> 
     let raw = std::fs::read_to_string(prefix.join(".update-timestamp")).ok()?;
     let stamp: u64 = raw.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse().ok()?;
 
-    for entry in std::fs::read_dir(home.join(".local/share/neutron/runtimes")).ok()?.flatten() {
+    for entry in std::fs::read_dir(runtimes_dir(home)).ok()?.flatten() {
         let meta = match std::fs::metadata(entry.path().join("share/wine/wine.inf")) {
             Ok(m) => m,
             Err(_) => continue,

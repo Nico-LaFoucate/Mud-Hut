@@ -468,7 +468,7 @@ pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
 /// EMPTY means the default, and a relative value is invalid and ignored. An empty XDG_DATA_HOME used
 /// to be taken as-is, so `mudhut accc` unpacked Adobe's package into the current directory (found in
 /// the 11.10-138 fresh-HOME test, 2026-10-19).
-fn xdg_from(value: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>, fallback: &str) -> Option<PathBuf> {
+pub(crate) fn xdg_from(value: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>, fallback: &str) -> Option<PathBuf> {
     value
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
