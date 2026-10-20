@@ -798,7 +798,7 @@ pub fn run_hdpim(
         let exited = child.try_wait().context("polling hdpim_host")?;
         // Read the log AFTER polling, so a completion line written just before the host
         // exited is seen.
-        let log = std::fs::read_to_string(&host_log_path).unwrap_or_default();
+        let log = read_log(&host_log_path);
         // Progress is HDPIM's own output; the host's "[host] alive" heartbeat every 10 s is not.
         let hdpim_lines = log.matches("HDPIM[").count();
         if hdpim_lines != last_len {
@@ -977,8 +977,17 @@ fn keep_log_quietly(host_log: &Path) -> PathBuf {
 /// On a failed install, keep HDPIM's log (it names the component and the reason) and return a
 /// message with its path and its error lines. The log used to be deleted on every failure, so
 /// "workflow error 182" arrived with no way to see which package HDPIM was missing.
+/// A log written by Windows programs, as text. ⛔ NOT `read_to_string`: HDPIM writes file names in the
+/// Windows code page, and one non-ASCII name made the whole read fail, which `unwrap_or_default`
+/// turned into an EMPTY log. German InDesign's "... Zeichen ändern.xml" preset (0xE4) did exactly
+/// that: from then on Mud Hut never saw "tasks completed.", and when the installer exited normally it
+/// reported "Adobe's installer stopped before it finished" for an install that had worked (2026-10-19).
+fn read_log(path: &Path) -> String {
+    std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+}
+
 fn kept_log(host_log: &Path) -> String {
-    let log = std::fs::read_to_string(host_log).unwrap_or_default();
+    let log = read_log(host_log);
     let errors: Vec<&str> = log
         .lines()
         .filter(|l| l.contains("rror") || l.contains("not present") || l.contains("failed"))
@@ -1169,7 +1178,7 @@ impl CommandExt for Command {
             .status()
             .with_context(|| format!("spawning {what}"))?;
 
-        let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let text = read_log(&log_path);
         let _ = std::fs::remove_file(&log_path);
 
         if !st.success() {
@@ -1262,5 +1271,20 @@ mod stamp_tests {
         }
         std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o644)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod read_log_tests {
+    #[test]
+    fn a_code_page_file_name_does_not_empty_the_log() {
+        // The bytes HDPIM wrote for German InDesign: "ä" as Windows-1252 0xE4, then the line Mud Hut waits for.
+        let p = std::env::temp_dir().join(format!("mudhut-readlog-{}", std::process::id()));
+        let mut bytes = b"  HDPIM[10] ...\\GREP\\de_DE\\Farbe von arabischen diakritischen Zeichen ".to_vec();
+        bytes.extend_from_slice(b"\xe4ndern.xml\r\n  HDPIM[20] HDPIM|ProgressManager :: All 56 tasks completed.\r\n");
+        std::fs::write(&p, &bytes).unwrap();
+        assert!(std::fs::read_to_string(&p).is_err(), "the old read failed on this file");
+        assert!(super::read_log(&p).contains("tasks completed."));
+        let _ = std::fs::remove_file(&p);
     }
 }
