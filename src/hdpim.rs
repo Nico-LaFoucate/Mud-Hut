@@ -29,6 +29,8 @@ pub struct Config {
     pub hdpim_host: PathBuf,
     /// The ACCCx `.pima` runtime extractor (Python 3, stdlib only).
     pub extractor: PathBuf,
+    /// Records the extracted packages in pim.db the way Adobe's installer does (Python 3, stdlib only).
+    pub register: PathBuf,
     /// Staged public ACCCx runtime packages (AAM/ ADC/ ADC64/ …).
     pub accc_packages: PathBuf,
 }
@@ -46,7 +48,9 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>
     )?;
     let hdpim_host = repo_tools.join("hdpim_host.exe");
     let extractor = repo_tools.join("extract_accc_runtime.py");
-    for (what, p) in [("hdpim_host.exe", &hdpim_host), ("extract_accc_runtime.py", &extractor)] {
+    let register = repo_tools.join("register_accc_pim.py");
+    for (what, p) in [("hdpim_host.exe", &hdpim_host), ("extract_accc_runtime.py", &extractor),
+                      ("register_accc_pim.py", &register)] {
         if !p.is_file() {
             bail!("missing {what}: {}", p.display());
         }
@@ -54,7 +58,7 @@ pub fn discover(repo_tools: &Path, accc_packages: PathBuf, prefix: Option<&Path>
     if !accc_packages.is_dir() {
         bail!("ACCCx runtime packages dir not found: {}", accc_packages.display());
     }
-    Ok(Config { wine, hdpim_host, extractor, accc_packages })
+    Ok(Config { wine, hdpim_host, extractor, register, accc_packages })
 }
 
 /// Ask `neutron runtime which` for the wine the CLI would launch with. None if the CLI is
@@ -604,20 +608,25 @@ pub(crate) fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<
     Ok(())
 }
 
-/// Seed Adobe Desktop Common (HDBox/HDPIM + ESD engine + ADS/IPCBroker) from the
-/// public ACCCx `.pima`.
+/// Seed Adobe Desktop Common (HDBox/HDPIM + ESD engine + ADS/IPCBroker) and AdobeApplicationManager
+/// (IPC) from the public ACCCx `.pima`, and record them the way Adobe's installer does.
 ///
-/// ⭐ ALL FIVE SETS. This used to extract only `ADC,ADC64` — Adobe Desktop Common,
-/// enough to run the HDPIM install engine but NOT enough to leave a working
-/// desktop behind. The result was a prefix with no `AdobeApplicationManager` and
-/// no Creative Cloud Desktop, which a comparison against a known-good 2025 prefix
-/// shows it should have:
-///   AAM        -> AdobeApplicationManager (IPC)            688 KB
-///   ACC/ACC64  -> the Creative Cloud Desktop app itself     77 MB
-///   ADC/ADC64  -> Adobe Desktop Common (HDBox/HDPIM, ADS, IPCBox)
-/// The extractor is idempotent — it writes only files that are absent and reports
-/// the rest as "already present" — so this re-runs safely on a populated prefix.
+/// THREE SETS: AAM, ADC, ADC64. NOT the Creative Cloud desktop app (ACC/ACC64): Collider is the
+/// desktop here, and the apps never needed it (Photoshop, Premiere and Lightroom ran without it
+/// all along; a prefix Adobe's own installer wrote, ~/.premiere2025, has none). From 2026-09-04 to
+/// 2026-10-23 all five sets were laid down; with the app present, a working Adobe Desktop Service
+/// starts its helpers (Creative Cloud Helper, CoreSync) in the background.
+///
+/// RECORDED, not just unzipped: Adobe's installer writes each package and the applets its `.pimx`
+/// declares into a pim.db at the set's install path, and Adobe Desktop Service reads them at start.
+/// Without them it showed "Adobe Creative Cloud, needed to resolve the problem, is missing or
+/// damaged" every time Photoshop launched ("Unable to read CC Version from pim database ... Failed
+/// to get applet [Applet Id - NHEX_UIX]. Showing corruption dialog", its log). register_accc_pim.py.
+///
+/// Both tools are idempotent (absent files only; the same records), so this re-runs safely on a
+/// populated prefix: every install and every update does, which also repairs an older prefix.
 pub(crate) fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<()> {
+    const SETS: &str = "AAM,ADC,ADC64";
     let out = Command::new("python3")
         .arg(&cfg.extractor)
         .arg("--packages")
@@ -625,11 +634,24 @@ pub(crate) fn seed_runtime(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<
         .arg("--prefix")
         .arg(prefix)
         .arg("--sets")
-        .arg("AAM,ACC,ACC64,ADC,ADC64")
+        .arg(SETS)
         .output()
         .context("running extract_accc_runtime.py")?;
     if !out.status.success() {
         bail!("ACC runtime extraction failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let out = Command::new("python3")
+        .arg(&cfg.register)
+        .arg("--packages")
+        .arg(&cfg.accc_packages)
+        .arg("--prefix")
+        .arg(prefix)
+        .arg("--sets")
+        .arg(SETS)
+        .output()
+        .context("running register_accc_pim.py")?;
+    if !out.status.success() {
+        bail!("recording Adobe's desktop components failed: {}", String::from_utf8_lossy(&out.stderr));
     }
     em.progress("seed", 40, "runtime staged");
     Ok(())

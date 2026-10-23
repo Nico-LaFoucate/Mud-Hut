@@ -53,7 +53,7 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
     {
         let tools = crate::download::repo_tools_dir()
             .unwrap_or_else(|_| PathBuf::from("tools"));
-        let missing: Vec<&str> = ["hdpim_host.exe", "extract_accc_runtime.py"]
+        let missing: Vec<&str> = ["hdpim_host.exe", "extract_accc_runtime.py", "register_accc_pim.py"]
             .into_iter()
             .filter(|f| !tools.join(f).is_file())
             .collect();

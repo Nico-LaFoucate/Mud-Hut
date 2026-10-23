@@ -119,6 +119,19 @@ fn busy_failure(b: &crate::busy::Busy, doing: &str) -> anyhow::Error {
     .into()
 }
 
+/// `mudhut repair`: the seeding step of an install/update on its own (absent files + pim.db records),
+/// with the prefix's wine session ended first, as an update does.
+pub(crate) fn cmd_repair(em: &Emitter, prefix: &Path) -> Result<()> {
+    if !prefix.join("drive_c").is_dir() {
+        anyhow::bail!("{} is not a prefix (no drive_c)", prefix.display());
+    }
+    quiesce(em, prefix)?;
+    let cfg = crate::hdpim::discover(&crate::download::repo_tools_dir()?, crate::download::accc_packages_dir(em)?, Some(prefix))?;
+    crate::hdpim::seed_runtime(em, &cfg, prefix)?;
+    em.result(&json!({ "ok": true, "prefix": prefix, "repaired": ["desktop-components"] }));
+    Ok(())
+}
+
 /// End the prefix's wine session with no app open: Adobe's helpers are closed by
 /// `neutron teardown` (the full, graceful one; it runs only when no app is open), then wait for
 /// every process of the prefix to be gone, so the registry files on disk are complete.

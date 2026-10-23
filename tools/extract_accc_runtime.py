@@ -29,18 +29,19 @@ TOKEN MAP  (resolved, then confirmed against a known-good reference prefix)
     [ACC_PATH] = C:\Program Files (x86)\Adobe\Adobe Creative Cloud
                  (ACC + ACC64 packageSets -- the CC-desktop app itself;
                   e.g. ACC\Creative Cloud.exe)
-    [AAM_PATH] = C:\Program Files (x86)\Common Files\Adobe
-                 (AAM packageSet; IPC\AdobeIPCBroker.exe).  ADC_PATH sits
-                 directly beneath this dir, matching Adobe's convention of
-                 %CommonProgramFiles(x86)%\Adobe for the AAM token.
+    [AAM_PATH] = C:\Program Files (x86)\Common Files\Adobe\OOBE\PDApp
+                 (AAM packageSet; IPC\AdobeIPCBroker.exe), where a prefix Adobe's
+                 own installer wrote keeps it.
 
-Note that both 32- and 64-bit packageSets share a token: ADC64.installPath and
-ADC.installPath are BOTH [ADC_PATH], and ACC64/ACC are BOTH [ACC_PATH].  The
-64-bit components therefore do NOT get their own "*64" directory -- the `.pimx`
-`<target_location>` folds them into the 32-bit component's dir (Core64 -> /Core/,
-CEF64 -> /CEF/, HEX64 -> /HEX/, CoreExt64 -> /CoreExt/, TCC64 -> /TCC/,
-UPI64 -> /RemoteComponents/UPI/).  This is exactly why we trust the per-package
-`<target_location>` from the `.pimx` rather than the package name.
+Both 32- and 64-bit packageSets name the same token in ApplicationInfo.xml
+(ADC64.installPath and ADC.installPath are BOTH [ADC_PATH]), but a 64-bit set is
+laid down under the 64-bit root (TOKEN_64 below: C:\Program Files\Common Files\...),
+as on Windows.  Within a root the `.pimx` `<target_location>` names the dir
+(Core64 -> /Core/, CEF64 -> /CEF/, HEX64 -> /HEX/, ...), which is why we trust it
+rather than the package name.
+
+Unzipping is not the whole install: Adobe's installer also records each package
+in a pim.db, which register_accc_pim.py does after this.
 
 LEGAL / SCOPE NOTE
 ------------------
@@ -88,7 +89,9 @@ from pathlib import PurePosixPath, PureWindowsPath
 # appear inside <installPath> in ApplicationInfo.xml.
 # ---------------------------------------------------------------------------
 TOKEN_MAP = {
-    "[AAM_PATH]": r"C:\Program Files (x86)\Common Files\Adobe",
+    # AAM (the IPC package) lives in OOBE\PDApp: a prefix Adobe's own installer wrote (~/.premiere2025) has
+    # OOBE\PDApp\IPC\AdobeIPCBroker.exe with IPC.pimx and a pim.db recording IPC there (checked 2026-10-23).
+    "[AAM_PATH]": r"C:\Program Files (x86)\Common Files\Adobe\OOBE\PDApp",
     "[ADC_PATH]": r"C:\Program Files (x86)\Common Files\Adobe\Adobe Desktop Common",
     "[ACC_PATH]": r"C:\Program Files (x86)\Adobe\Adobe Creative Cloud",
     # 64-bit packageSets (ADC64/ACC64) install to the *64-bit* roots, NOT (x86).

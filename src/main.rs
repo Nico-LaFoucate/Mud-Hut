@@ -87,6 +87,14 @@ enum Cmd {
     /// Download and verify Adobe's Creative Cloud package (ACCCx) now, instead of on the first
     /// install. `neutron setup` runs this.
     Accc,
+    /// Lay down any missing Adobe desktop components in an existing prefix and record them the
+    /// way Adobe's installer does (what every install and update also does). Fixes "Adobe
+    /// Creative Cloud ... is missing or damaged" in a prefix installed before 0.3.5. Refuses
+    /// (exit 3) while any Adobe app runs in the prefix.
+    Repair {
+        #[arg(long)]
+        prefix: PathBuf,
+    },
     /// Which Adobe apps a prefix holds, at which build, and how they got there (read-only, no
     /// wine; safe while apps run).
     Inventory {
@@ -317,6 +325,7 @@ fn main() -> ExitCode {
             updates::cmd_check_updates(&em, updates::CheckOpts { prefixes: prefix, all_prefixes, apps: app, max_age, refresh, offline, cached })
         }
         Cmd::Accc => download::prefetch_accc(&em),
+        Cmd::Repair { prefix } => update::cmd_repair(&em, &prefix),
         Cmd::Download { app, lang, dest, core_only, only } => {
             feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
         }

@@ -5,7 +5,7 @@
 # the shipped layout `repo_tools_dir()` resolves first (`<exe dir>/tools`):
 #
 #   <install dir>/mudhut         the release binary
-#   <install dir>/tools/         hdpim_host.exe, extract_accc_runtime.py
+#   <install dir>/tools/         hdpim_host.exe, extract_accc_runtime.py, register_accc_pim.py
 #   <bin dir>/mudhut             symlink to the binary (for PATH)
 #
 # The bin-dir symlink is safe: the binary locates its tools via /proc/self/exe,
@@ -24,7 +24,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 SHARE="${MUDHUT_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mudhut}"
 BIN="${MUDHUT_BIN_DIR:-$HOME/.local/bin}"
 # The tools the binary needs at runtime (`--method download` install engine).
-RUNTIME_TOOLS=(hdpim_host.exe extract_accc_runtime.py)
+RUNTIME_TOOLS=(hdpim_host.exe extract_accc_runtime.py register_accc_pim.py)
 
 if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$BIN/mudhut"
@@ -45,15 +45,15 @@ done
 # Optional: stage Adobe's ACCCx packages beside the binary. Mud Hut does not need this:
 # without them it downloads Adobe's Creative Cloud package and checks its md5 on the
 # first install (or up front with `mudhut accc`). When the folder below exists
-# (MUDHUT_ACCC_SRC, or the old development default), all five sets are copied:
-# AAM (AdobeApplicationManager), ACC/ACC64 (the Creative Cloud Desktop app itself)
-# and ADC/ADC64 (Adobe Desktop Common).
+# (MUDHUT_ACCC_SRC, or the old development default), the three sets Mud Hut lays down are
+# copied: AAM (AdobeApplicationManager) and ADC/ADC64 (Adobe Desktop Common). Not ACC/ACC64,
+# the Creative Cloud desktop app: Collider is the desktop (see seed_runtime).
 ACCC_SRC="${MUDHUT_ACCC_SRC:-$HOME/mudhut-parent-stage/packages}"
 if [ -d "$ACCC_SRC" ]; then
-    echo "==> staging the ACCCx runtime packages (~318 MB)"
+    echo "==> staging the ACCCx runtime packages"
     rm -rf "$SHARE/accc-packages"
     mkdir -p "$SHARE/accc-packages"
-    for _s in AAM ACC ACC64 ADC ADC64 ApplicationInfo.xml; do
+    for _s in AAM ADC ADC64 ApplicationInfo.xml; do
         [ -e "$ACCC_SRC/$_s" ] || { echo "!! missing $ACCC_SRC/$_s"; exit 1; }
         cp -a "$ACCC_SRC/$_s" "$SHARE/accc-packages/"
     done

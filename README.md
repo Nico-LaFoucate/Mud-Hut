@@ -42,6 +42,7 @@ mudhut install --suite --method windows --source <C:> --prefix <dir>
 
 mudhut download <app> [--dest DIR] [--core-only]   # fetch+verify the app's own packages (not an offline package)
 mudhut accc                                         # fetch+verify Adobe's Creative Cloud package (ACCCx) now
+mudhut repair --prefix <dir>                        # record Adobe's desktop components in a prefix installed before 0.3.5
 mudhut ledger                                       # show the resolved Adobe endpoints/apps
 
 # Adobe app updates (Collider runs these for you):
@@ -73,8 +74,9 @@ Premiere Pro and Media Encoder installs leave out the speech-to-text language pa
 1. Resolve the latest build + its dependency components from Adobe's product feed.
 2. Download every package (product + deps) and verify each 2 MiB segment
    (SHA-256 for the product payloads, MD5 for the small shared deps).
-3. Prepare the prefix (Win11 spoof, VC++ runtimes) and seed Adobe's Desktop-Common
-   runtime from the public ACCCx components.
+3. Prepare the prefix (Win11 spoof, VC++ runtimes), seed Adobe's Desktop-Common
+   runtime from the public ACCCx components and record them the way Adobe's installer
+   does (not the Creative Cloud desktop app: Collider takes its place).
 4. Drive Adobe's shipped `HDPIM.dll` (`hdpimInstallProduct`) to decrypt the payloads
    and lay down a genuine, unmodified install.
 5. `neutron prefix provision` the prefix — which also writes the menu launcher, icon and

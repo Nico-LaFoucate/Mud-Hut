@@ -407,7 +407,7 @@ pub(crate) fn seed_ui_fonts(em: &Emitter, exe: &Path, prefix: &Path) {
     }
 }
 
-/// Where the shipped `hdpim_host.exe` + `extract_accc_runtime.py` live.
+/// Where the shipped `hdpim_host.exe`, `extract_accc_runtime.py` and `register_accc_pim.py` live.
 /// `$MUDHUT_TOOLS`, else `<exe dir>/tools` (shipped layout), else the cargo
 /// dev-tree `<repo>/tools` (binary at `<repo>/target/{debug,release}/mudhut`),
 /// else `./tools`. The dev-tree probe is what lets Collider — which runs the
@@ -433,12 +433,13 @@ pub(crate) fn repo_tools_dir() -> Result<PathBuf> {
     embedded_tools_dir()
 }
 
-/// The two runtime tools, compiled into the binary so a release is one file (what
+/// The runtime tools, compiled into the binary so a release is one file (what
 /// `neutron setup` downloads). Written out on first use; rewritten when they differ from the
 /// copy this binary carries.
 const EMBEDDED_TOOLS: &[(&str, &[u8])] = &[
     ("hdpim_host.exe", include_bytes!("../tools/hdpim_host.exe")),
     ("extract_accc_runtime.py", include_bytes!("../tools/extract_accc_runtime.py")),
+    ("register_accc_pim.py", include_bytes!("../tools/register_accc_pim.py")),
 ];
 
 fn embedded_tools_dir() -> Result<PathBuf> {
