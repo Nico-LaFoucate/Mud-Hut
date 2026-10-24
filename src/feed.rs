@@ -234,7 +234,7 @@ pub const MINIMAL_SKIP_DEPS: &[&str] = &["CCXP", "ACR", "COSY"];
 
 /// One build of a product in Adobe's feed (the feed lists every build of the current and the
 /// previous major, each with its own base version and build GUID).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Candidate {
     pub sap: String,
     /// `<product version>`: the codex version, "27.11".
@@ -296,6 +296,44 @@ pub fn candidates_from_doc(doc: &roxmltree::Document, sap: &str, platform: &str)
     out
 }
 
+/// What `pick_candidate` chose.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Pick<'a> {
+    /// Install this build.
+    Build(&'a Candidate),
+    /// Only an unverified build is on offer; installing it needs `--allow-unverified`.
+    Unverified(&'a Candidate),
+    /// Nothing on offer (no build, or only blocked ones).
+    None,
+}
+
+/// The build an install takes: the hold policy updates already follow (C70). The newest VERIFIED
+/// build, never a blocked one, so a new yearly version that Neutron has not verified yet is not what
+/// a new user gets. `--allow-unverified` permits an unverified build when no verified one is on
+/// offer. An app with no verified build at all (the experimental ones) keeps Adobe's newest
+/// non-blocked build when no yearly version was chosen, as before. `all` is newest first.
+pub(crate) fn pick_candidate<'a>(
+    all: &'a [Candidate],
+    list: &crate::verified::List,
+    sap: &str,
+    major: Option<u64>,
+    allow_unverified: bool,
+) -> Pick<'a> {
+    let pool: Vec<&Candidate> = all
+        .iter()
+        .filter(|c| major.is_none_or(|m| crate::version::major(&c.product_version) == m))
+        .filter(|c| list.blocked(&c.sap, &c.base(), &c.product_version).is_none())
+        .collect();
+    let Some(newest) = pool.first().copied() else { return Pick::None };
+    if let Some(v) = pool.iter().find(|c| list.verified(&c.sap, &c.base(), &c.product_version).is_some()) {
+        return Pick::Build(v);
+    }
+    if allow_unverified || (major.is_none() && !list.covers(sap)) {
+        return Pick::Build(newest);
+    }
+    Pick::Unverified(newest)
+}
+
 /// Resolve the latest build for `app_id` from the live product feed.
 pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Build> {
     resolve_build_version(em, ledger, app_id, None, false)
@@ -316,34 +354,32 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
     let doc = roxmltree::Document::parse(&xml).context("parsing product feed XML")?;
 
     let all = candidates_from_doc(&doc, &app.sap, &platform);
-    let pick = match major {
-        None => all.first().cloned(),
-        Some(m) => {
-            // Hold policy for a chosen yearly version: the newest verified build of that major;
-            // an unverified one only when the user confirmed it.
-            let of_major: Vec<&Candidate> = all.iter().filter(|c| crate::version::major(&c.product_version) == m).collect();
-            let list = crate::verified::load(false);
-            let verified = of_major.iter().find(|c| list.list.verified(&c.sap, &c.base(), &c.product_version).is_some());
-            match (verified, of_major.first()) {
-                (Some(v), _) => Some((*v).clone()),
-                (None, Some(newest)) if allow_unverified => Some((*newest).clone()),
-                (None, Some(newest)) => {
-                    return Err(crate::failure::Failure::new(
-                        "unverified",
-                        crate::failure::EX_FAIL,
-                        format!(
-                            "Neutron hasn't verified {} {} yet. It may not open, or parts of it may not work. To install it anyway, confirm (--allow-unverified).",
-                            app.name.trim_end_matches(" (experimental)"),
-                            crate::version::label(&newest.product_version)
-                        ),
-                    )
-                    .with("prefix_changed", false)
-                    .with("to", newest.product_version.clone())
-                    .into())
-                }
-                (None, None) => None,
+    let list = crate::verified::load(false);
+    let pick = match pick_candidate(&all, &list.list, &app.sap, major, allow_unverified) {
+        Pick::Build(c) => {
+            if let Some(newest) = all.first().filter(|n| n.product_version != c.product_version && major.is_none()) {
+                em.note(&format!(
+                    "installing {}, the newest build Neutron has verified; Adobe's newest is {} (not yet verified)",
+                    c.product_version, newest.product_version
+                ));
             }
+            Some(c.clone())
         }
+        Pick::Unverified(newest) => {
+            return Err(crate::failure::Failure::new(
+                "unverified",
+                crate::failure::EX_FAIL,
+                format!(
+                    "Neutron hasn't verified {} {} yet. It may not open, or parts of it may not work. To install it anyway, confirm (--allow-unverified).",
+                    app.name.trim_end_matches(" (experimental)"),
+                    crate::version::label(&newest.product_version)
+                ),
+            )
+            .with("prefix_changed", false)
+            .with("to", newest.product_version.clone())
+            .into())
+        }
+        Pick::None => None,
     };
     let c = match (pick, major) {
         (Some(c), _) => c,
@@ -815,6 +851,71 @@ mod plan_tests {
         let v: Vec<&str> = c.iter().map(|x| x.product_version.as_str()).collect();
         assert_eq!(v, vec!["27.10.0.26", "27.9.1.1", "26.11.8.318"], "deduped by GUID, numeric order, platform-filtered");
         assert_eq!(c[2].base(), "26.0");
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::{pick_candidate, Candidate, Pick};
+
+    fn cand(v: &str, base: &str) -> Candidate {
+        Candidate { sap: "PHSP".into(), feed_version: v.into(), product_version: v.into(),
+                    base_version: Some(base.into()), build_guid: format!("g{v}"), platform: "win64".into() }
+    }
+
+    /// The feed the day Adobe ships 2027: newest first, the 2026 point releases below it.
+    fn feed() -> Vec<Candidate> {
+        vec![cand("28.0.0.10", "28.0"), cand("27.12.0.5", "27.0"), cand("27.11.0.26", "27.0"), cand("27.8.0.13", "27.0")]
+    }
+
+    fn list(json: &str) -> crate::verified::List {
+        serde_json::from_str(json).unwrap()
+    }
+
+    const VERIFIED_2026: &str = r#"{"schema":1,"serial":3,"apps":{"PHSP":{"27.0":{
+        "verified":[{"build":"27.11.0.26"},{"build":"27.8.0.13"}],"blocked":[]}}}}"#;
+
+    #[test]
+    fn a_fresh_install_takes_the_newest_verified_build_not_adobes_newest() {
+        let f = feed();
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", None, false), Pick::Build(&f[2]));
+    }
+
+    #[test]
+    fn a_blocked_build_is_never_installed() {
+        let f = feed();
+        let l = list(r#"{"schema":1,"serial":3,"apps":{"PHSP":{"27.0":{
+            "verified":[{"build":"27.11.0.26"},{"build":"27.8.0.13"}],"blocked":[{"build":"27.11.0.26","reason":"crash"}]}}}}"#);
+        assert_eq!(pick_candidate(&f, &l, "PHSP", None, false), Pick::Build(&f[3]));
+        // --allow-unverified still skips a blocked build.
+        let only_blocked = list(r#"{"schema":1,"serial":3,"apps":{"PHSP":{"28.0":{"verified":[],"blocked":[{"build":"28.0.0.10"}]}}}}"#);
+        assert_eq!(pick_candidate(&f[..1], &only_blocked, "PHSP", None, true), Pick::None);
+    }
+
+    #[test]
+    fn an_app_neutron_never_verified_keeps_adobes_newest() {
+        let f: Vec<Candidate> = feed().into_iter().map(|c| Candidate { sap: "IDSN".into(), ..c }).collect();
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "IDSN", None, false), Pick::Build(&f[0]),
+                   "the experimental apps have no verified build: unchanged behavior");
+        // ...but a chosen yearly version of it still asks first, as before.
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "IDSN", Some(28), false), Pick::Unverified(&f[0]));
+    }
+
+    #[test]
+    fn a_chosen_yearly_version_needs_confirmation_when_unverified() {
+        let f = feed();
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", Some(28), false), Pick::Unverified(&f[0]));
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", Some(28), true), Pick::Build(&f[0]));
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", Some(27), false), Pick::Build(&f[2]));
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", Some(25), false), Pick::None);
+    }
+
+    #[test]
+    fn a_covered_app_with_nothing_verified_on_offer_asks_first() {
+        let f = feed();
+        let stale = list(r#"{"schema":1,"serial":3,"apps":{"PHSP":{"27.0":{"verified":[{"build":"27.1.0.1"}],"blocked":[]}}}}"#);
+        assert_eq!(pick_candidate(&f, &stale, "PHSP", None, false), Pick::Unverified(&f[0]));
+        assert_eq!(pick_candidate(&f, &stale, "PHSP", None, true), Pick::Build(&f[0]));
     }
 }
 

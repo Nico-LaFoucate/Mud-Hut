@@ -196,6 +196,10 @@ impl List {
     pub fn verified(&self, sap: &str, base: &str, build: &str) -> Option<&Entry> {
         self.base(sap, base)?.verified.iter().find(|e| crate::version::eq(&e.build, build))
     }
+    /// Has Neutron verified any build of this app? The experimental apps have none.
+    pub fn covers(&self, sap: &str) -> bool {
+        self.apps.get(sap).is_some_and(|bases| bases.values().any(|b| !b.verified.is_empty()))
+    }
     pub fn blocked(&self, sap: &str, base: &str, build: &str) -> Option<&Blocked> {
         self.base(sap, base)?.blocked.iter().find(|e| crate::version::eq(&e.build, build))
     }
