@@ -82,6 +82,19 @@ pub fn install(
         products.display()
     ));
 
+    // Already installed: re-running a finished install downloaded gigabytes and then failed in
+    // Adobe's installer (HDPIM 130, "already installed").
+    if already_installed(prefix, &plan) {
+        em.note(&format!("{} {} is already installed in {}", cat.name, plan.product_version, prefix.display()));
+        if em.is_json() {
+            em.result(&serde_json::json!({
+                "ok": true, "already_installed": true, "method": "download", "app": cat.id,
+                "product_version": plan.product_version, "prefix": prefix.display().to_string(),
+            }));
+        }
+        return Ok(());
+    }
+
     if dry_run {
         let dep_saps: Vec<&str> = plan.dependencies.iter().map(|d| d.sap.as_str()).collect();
         em.note(&format!(
@@ -110,6 +123,7 @@ pub fn install(
     // Refuse before downloading gigabytes into a prefix that is in use (the engine checks again
     // right before it starts).
     crate::hdpim::refuse_if_busy(prefix)?;
+    check_space(prefix, source.is_none().then_some(products.as_path()), &plan)?;
 
     let roots = stage(em, &ledger, &plan, &raw_manifest, &dep_builds, &products, source.is_some())?;
 
@@ -350,6 +364,66 @@ pub(crate) fn write_application_json(products: &Path, sap: &str, raw: &str) -> R
 }
 
 /// Default download-cache products dir: `~/.cache/mudhut/<SAP>-<ver>-<plat>/products`.
+/// Adobe's own record (`hdpim.db`) has exactly this build of the app, and its program is on disk.
+fn already_installed(prefix: &Path, plan: &DownloadPlan) -> bool {
+    let Ok(Some(db)) = crate::hdpimdb::Db::read(prefix) else { return false };
+    let Some(p) = db.product(&plan.sap, &plan.base_version) else { return false };
+    if !p.build().is_some_and(|b| crate::version::eq(b, &plan.product_version)) {
+        return false;
+    }
+    p.app_launch().and_then(|w| crate::hdpimdb::win_to_prefix(prefix, &w)).is_some_and(|f| f.is_file())
+}
+
+/// The nearest existing directory at or above `p` (the download cache may not exist yet).
+fn existing(p: &Path) -> PathBuf {
+    let mut cur = p.to_path_buf();
+    while !cur.exists() {
+        match cur.parent() {
+            Some(up) => cur = up.to_path_buf(),
+            None => break,
+        }
+    }
+    cur
+}
+
+/// Free space for an install, before anything is fetched. The packages land in the download cache
+/// (`cache`; None for a caller-supplied `--source`) and the unpacked app in the prefix, which can be
+/// two filesystems; each must hold its share plus a 2 GB margin (the shared components, a few
+/// hundred MB, are not sized until staging).
+fn check_space(prefix: &Path, cache: Option<&Path>, plan: &DownloadPlan) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    const MARGIN: u64 = 2 << 30;
+    let unpacked: u64 = plan.packages.iter().map(|x| if x.extract_bytes > 0 { x.extract_bytes } else { x.bytes * 2 }).sum();
+    let at_prefix = existing(prefix);
+    let mut needs: Vec<(PathBuf, u64)> = vec![(at_prefix.clone(), unpacked + MARGIN)];
+    if let Some(c) = cache {
+        let at_cache = existing(c);
+        let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
+        if dev(&at_cache).is_some() && dev(&at_cache) == dev(&at_prefix) {
+            needs[0].1 += plan.total_bytes;
+        } else {
+            needs.push((at_cache, plan.total_bytes + MARGIN));
+        }
+    }
+    for (path, need) in needs {
+        if let Some(free) = crate::snapshot::free_bytes(&path) {
+            if free < need {
+                return Err(crate::failure::Failure::new(
+                    "disk-space",
+                    crate::failure::EX_DISK,
+                    format!(
+                        "Not enough free disk space: installing {} needs about {:.1} GB on {}, and {:.1} GB is free. Nothing was changed.",
+                        plan.name, need as f64 / 1e9, path.display(), free as f64 / 1e9
+                    ),
+                )
+                .with("prefix_changed", false)
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {
     let base = xdg_dir("XDG_CACHE_HOME", ".cache").context("no HOME/XDG_CACHE_HOME for the download cache")?;
     Ok(base
@@ -978,5 +1052,55 @@ mod xdg_tests {
         assert_eq!(xdg_from(None, home.clone(), ".local/share"), want);
         assert_eq!(xdg_from(Some("/srv/data".into()), home, ".local/share"), Some(PathBuf::from("/srv/data")));
         assert_eq!(xdg_from(Some("".into()), None, ".local/share"), None);
+    }
+}
+
+#[cfg(test)]
+mod install_checks {
+    use super::*;
+
+    fn plan(build: &str, bytes: u64) -> DownloadPlan {
+        DownloadPlan {
+            app: "premiere".into(), sap: "PPRO".into(), name: "Adobe Premiere Pro".into(),
+            product_version: build.into(), base_version: "26.0".into(), platform: "win64".into(),
+            build_guid: "g".into(), language: "en_US".into(),
+            packages: vec![crate::feed::PlannedPackage {
+                sap: "PPRO".into(), name: "AdobePremierePro26AllTrial".into(), version: build.into(), module: None,
+                extract_bytes: 0, kind: "core".into(), bytes, path: "/a.zip".into(),
+                package_hash_key: String::new(), validation_url: String::new(),
+            }],
+            total_bytes: bytes, dependencies: vec![], modules: vec![], skipped_modules: vec![], skipped_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn already_installed_needs_the_same_build_and_its_program_on_disk() {
+        let dir = std::env::temp_dir().join(format!("mudhut-already-{}", std::process::id()));
+        crate::hdpimdb::tests::make_db(
+            &dir.join(crate::hdpimdb::DB_REL),
+            &[("PPRO", "26.3", &[
+                ("BaseVersion", "26.0"), ("BuildVersion", "26.3.0.93"), ("InstallDir", "C:\\Program Files\\Adobe"),
+                ("AppLaunch", "[INSTALLDIR]\\Adobe Premiere Pro 2026\\Adobe Premiere Pro.exe"),
+            ], &[])],
+        );
+        assert!(!already_installed(&dir, &plan("26.3.0.93", 1)), "a record without the program is not an install");
+        let exe = dir.join("drive_c/Program Files/Adobe/Adobe Premiere Pro 2026/Adobe Premiere Pro.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert!(already_installed(&dir, &plan("26.3.0.93", 1)));
+        assert!(!already_installed(&dir, &plan("26.3.1.1", 1)), "another build is a real install");
+        assert!(!already_installed(&dir.join("nothing-here"), &plan("26.3.0.93", 1)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_space_check_refuses_an_install_that_cannot_fit() {
+        let dir = std::env::temp_dir().join(format!("mudhut-space-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("cache/mudhut/PPRO-26.3.0.93-win64/products");   // not created yet
+        assert!(check_space(&dir, Some(&cache), &plan("26.3.0.93", 1)).is_ok());
+        let e = check_space(&dir, Some(&cache), &plan("26.3.0.93", u64::MAX / 8)).unwrap_err();
+        assert!(format!("{e:#}").contains("Not enough free disk space"), "{e:#}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

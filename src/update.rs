@@ -125,6 +125,9 @@ pub(crate) fn cmd_repair(em: &Emitter, prefix: &Path) -> Result<()> {
     if !prefix.join("drive_c").is_dir() {
         anyhow::bail!("{} is not a prefix (no drive_c)", prefix.display());
     }
+    // Hold the prefix as install and update do: `neutron launch` refuses meanwhile, and a repair
+    // cannot run in the middle of another Mud Hut job.
+    let _lock = state::lock(prefix, "repair")?;
     quiesce(em, prefix)?;
     let cfg = crate::hdpim::discover(&crate::download::repo_tools_dir()?, crate::download::accc_packages_dir(em)?, Some(prefix))?;
     crate::hdpim::seed_runtime(em, &cfg, prefix)?;
