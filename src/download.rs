@@ -786,16 +786,20 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
         let url = format!("{cdn}{}", p.path);
         let start = done;
         let res = crate::net::retry(&p.name, |m| em.note(m), || {
-            done = start; // a retry restarts the package (segments are hashed in order)
+            done = start; // download_one counts what it keeps of an earlier try (it resumes)
             download_one(
                 // Adobe's CDN serves packages only to its own installer's User-Agent (tested
                 // 2026-10-05: "MudHut/0.2" -> 403), so package downloads keep the ledger's.
-                em, &agent, &url, &ledger.headers, &out, validation.as_ref(),
+                em, &agent, &url, &ledger.headers, &out, validation.as_ref(), p.bytes,
                 &mut done, total, &mut last_pct,
             )
         });
         if let Err(e) = res {
-            let _ = fs::remove_file(out.with_extension("part"));
+            // With Adobe's segment hashes the partial file is kept: the next try or run resumes
+            // after its last verified segment. Without them it cannot be trusted.
+            if validation.is_none() {
+                let _ = fs::remove_file(out.with_extension("part"));
+            }
             let _ = fs::remove_file(&out);
             return Err(e).with_context(|| format!("downloading {}", p.name));
         }
@@ -872,7 +876,10 @@ fn get_text(agent: &ureq::Agent, headers: &BTreeMap<String, String>, url: &str) 
 }
 
 /// Stream one package to `<out>.part`, verifying each segment's SHA-256 against
-/// `validation` as it arrives, then atomically rename on full success.
+/// `validation` as it arrives, then atomically rename on full success. With `validation`, a
+/// `.part` left by an earlier try is resumed after its last segment that still matches Adobe's
+/// hashes (an HTTP Range request; a server that ignores it sends the whole file and the download
+/// starts over). Without it, the finished file must be `expected` bytes.
 #[allow(clippy::too_many_arguments)]
 fn download_one(
     em: &Emitter,
@@ -881,30 +888,57 @@ fn download_one(
     headers: &BTreeMap<String, String>,
     out: &Path,
     validation: Option<&Validation>,
+    expected: u64,
     done: &mut u64,
     total: u64,
     last_pct: &mut u8,
 ) -> Result<()> {
+    let tmp = out.with_extension("part");
+    let label = out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let seg_size = validation.map(|v| v.segment_size.max(1)).unwrap_or(u64::MAX);
+
+    let kept = validation.map(|v| verified_segments(&tmp, v)).unwrap_or(0);
+    if let Some(v) = validation {
+        if kept > 0 && kept == v.segments.len() {
+            // Every segment is there and verified: only the rename was missing.
+            *done += fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            fs::rename(&tmp, out).with_context(|| format!("finalizing {}", out.display()))?;
+            return Ok(());
+        }
+    }
+    let resume_at = kept as u64 * if validation.is_some() { seg_size } else { 0 };
+
     let mut req = agent.get(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
+    if resume_at > 0 {
+        req = req.set("Range", &format!("bytes={resume_at}-"));
+    }
     let resp = req.call().with_context(|| format!("GET {url}"))?;
+    let resumed = resume_at > 0 && resp.status() == 206;
     let mut reader = resp.into_reader();
 
-    let tmp = out.with_extension("part");
-    let mut f = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let mut f = if resumed {
+        let mut f = fs::OpenOptions::new().write(true).open(&tmp).with_context(|| format!("opening {}", tmp.display()))?;
+        f.set_len(resume_at)?;
+        std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(resume_at))?;
+        em.note(&format!("  resuming {label} at {:.1} MiB (verified)", resume_at as f64 / (1u64 << 20) as f64));
+        *done += resume_at;
+        f
+    } else {
+        File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?
+    };
+    let mut written = if resumed { resume_at } else { 0 };
     let mut buf = vec![0u8; 1 << 20]; // 1 MiB
-    let label = out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
 
-    let seg_size = validation.map(|v| v.segment_size.max(1)).unwrap_or(u64::MAX);
     // TYPE2 (product) = SHA-256; TYPE1 (small deps) = MD5.
     let mut hasher: Box<dyn DynDigest> = match validation {
         Some(v) if v.md5 => Box::new(Md5::new()),
         _ => Box::new(Sha256::new()),
     };
     let mut seg_filled = 0u64;
-    let mut seg_idx = 0usize;
+    let mut seg_idx = if resumed { kept } else { 0 };
 
     loop {
         let read = reader.read(&mut buf).context("reading from CDN")?;
@@ -913,6 +947,7 @@ fn download_one(
         }
         f.write_all(&buf[..read]).context("writing to disk")?;
         *done += read as u64;
+        written += read as u64;
 
         if let Some(v) = validation {
             // Feed the chunk into the segment hasher, splitting at 2 MiB boundaries.
@@ -942,12 +977,48 @@ fn download_one(
         if seg_idx != v.segments.len() {
             bail!("{label}: verified {seg_idx} segment(s) but validation lists {}", v.segments.len());
         }
+    } else if expected > 0 && written != expected {
+        bail!("{label}: received {written} bytes, the manifest says {expected}");
     }
 
     f.flush()?;
     drop(f);
     fs::rename(&tmp, out).with_context(|| format!("finalizing {}", out.display()))?;
     Ok(())
+}
+
+/// How many whole segments at the start of a kept `.part` file still match Adobe's hashes (0 when
+/// there is no such file). Only these are kept when a download resumes.
+fn verified_segments(tmp: &Path, v: &Validation) -> usize {
+    let Ok(mut f) = File::open(tmp) else { return 0 };
+    let seg = v.segment_size.max(1) as usize;
+    let mut buf = vec![0u8; seg];
+    let mut good = 0usize;
+    while good < v.segments.len() {
+        let mut filled = 0usize;
+        while filled < seg {
+            match f.read(&mut buf[filled..]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => filled += n,
+            }
+        }
+        // A short read is the end of the file: a whole last segment of the package, or a partial
+        // segment that is not kept.
+        let last = good + 1 == v.segments.len();
+        if filled == 0 || (filled < seg && !last) {
+            break;
+        }
+        let mut h: Box<dyn DynDigest> = if v.md5 { Box::new(Md5::new()) } else { Box::new(Sha256::new()) };
+        h.update(&buf[..filled]);
+        if check_segment(v, good, &to_hex(&h.finalize_reset()), "").is_err() {
+            break;
+        }
+        good += 1;
+        if filled < seg {
+            break;
+        }
+    }
+    good
 }
 
 /// A file named `file` of exactly `bytes` under another products dir: `$MUDHUT_PACKAGE_SOURCES`
@@ -1112,5 +1183,121 @@ mod install_checks {
         let e = check_space(&dir, Some(&cache), &plan("26.3.0.93", u64::MAX / 8)).unwrap_err();
         assert!(format!("{e:#}").contains("Not enough free disk space"), "{e:#}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    const SEG: usize = 2 << 20;
+
+    fn data() -> Vec<u8> {
+        (0..(5 << 20)).map(|i: usize| ((i * 31 + 7) % 251) as u8).collect()
+    }
+
+    fn validation(d: &[u8]) -> Validation {
+        let segments = d.chunks(SEG).map(|c| to_hex(&Sha256::digest(c))).collect();
+        Validation { segment_size: SEG as u64, segments, md5: false }
+    }
+
+    /// Serve `body` on 127.0.0.1; honor `Range: bytes=N-` when `ranges`. Returns the URL and the
+    /// Range header of every request ("" when none).
+    fn serve(body: Vec<u8>, ranges: bool) -> (String, Arc<Mutex<Vec<String>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/pkg.zip", l.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut range = String::new();
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        range = v.trim().trim_end_matches('-').to_string();
+                    }
+                }
+                log.lock().unwrap().push(range.clone());
+                let mut s = s;
+                let from: usize = if ranges { range.parse().unwrap_or(0) } else { 0 };
+                let part = &body[from..];
+                let head = if ranges && from > 0 {
+                    format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{}/{}\r\nConnection: close\r\n\r\n", part.len(), body.len() - 1, body.len())
+                } else {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len())
+                };
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(part);
+            }
+        });
+        (url, seen)
+    }
+
+    fn run(url: &str, out: &Path, v: Option<&Validation>, expected: u64) -> Result<()> {
+        let em = Emitter::new(true);
+        let agent = ureq::AgentBuilder::new().build();
+        let (mut done, mut pct) = (0u64, u8::MAX);
+        download_one(&em, &agent, url, &BTreeMap::new(), out, v, expected, &mut done, 5 << 20, &mut pct)
+    }
+
+    fn dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("mudhut-resume-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_kept_part_resumes_after_its_last_verified_segment() {
+        let d = data();
+        let (url, seen) = serve(d.clone(), true);
+        let out = dir("a").join("pkg.zip");
+        let mut part = d[..SEG].to_vec();
+        part.extend(vec![0xAAu8; 512 << 10]); // a torn second segment
+        fs::write(out.with_extension("part"), &part).unwrap();
+        run(&url, &out, Some(&validation(&d)), 0).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), d);
+        assert_eq!(*seen.lock().unwrap(), vec![SEG.to_string()], "one request, from the 2nd segment");
+    }
+
+    #[test]
+    fn a_server_that_ignores_range_restarts_cleanly() {
+        let d = data();
+        let (url, seen) = serve(d.clone(), false);
+        let out = dir("b").join("pkg.zip");
+        fs::write(out.with_extension("part"), &d[..SEG + 100]).unwrap();
+        run(&url, &out, Some(&validation(&d)), 0).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), d);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_complete_part_is_finalized_without_a_request() {
+        let d = data();
+        let (url, seen) = serve(d.clone(), true);
+        let out = dir("c").join("pkg.zip");
+        fs::write(out.with_extension("part"), &d).unwrap();
+        run(&url, &out, Some(&validation(&d)), 0).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), d);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn without_hashes_the_size_is_checked() {
+        let d = data();
+        let (url, _) = serve(d.clone(), true);
+        let out = dir("d").join("pkg.zip");
+        let e = run(&url, &out, None, (6 << 20) as u64).unwrap_err();
+        assert!(format!("{e:#}").contains("the manifest says"), "{e:#}");
+        assert!(!out.exists());
+        run(&url, &out, None, d.len() as u64).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), d);
     }
 }
