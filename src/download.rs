@@ -386,23 +386,28 @@ fn existing(p: &Path) -> PathBuf {
     cur
 }
 
-/// Free space for an install, before anything is fetched. The packages land in the download cache
-/// (`cache`; None for a caller-supplied `--source`) and the unpacked app in the prefix, which can be
-/// two filesystems; each must hold its share plus a 2 GB margin (the shared components, a few
-/// hundred MB, are not sized until staging).
+/// Free space for an install, before anything is fetched (see `require_space`).
 fn check_space(prefix: &Path, cache: Option<&Path>, plan: &DownloadPlan) -> Result<()> {
+    let unpacked: u64 = plan.packages.iter().map(|x| if x.extract_bytes > 0 { x.extract_bytes } else { x.bytes * 2 }).sum();
+    require_space(prefix, cache, plan.total_bytes, unpacked, &format!("installing {}", plan.name))
+}
+
+/// The packages land in the download cache (`cache`; None for a caller-supplied `--source`, which
+/// needs no download) and the unpacked app in the prefix, which can be two filesystems. Each must
+/// hold its share plus a 2 GB margin (the shared components, a few hundred MB, are not sized until
+/// staging), or one sum when they share a filesystem. `what` names the job in the message.
+pub(crate) fn require_space(prefix: &Path, cache: Option<&Path>, download: u64, unpacked: u64, what: &str) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     const MARGIN: u64 = 2 << 30;
-    let unpacked: u64 = plan.packages.iter().map(|x| if x.extract_bytes > 0 { x.extract_bytes } else { x.bytes * 2 }).sum();
     let at_prefix = existing(prefix);
     let mut needs: Vec<(PathBuf, u64)> = vec![(at_prefix.clone(), unpacked + MARGIN)];
     if let Some(c) = cache {
         let at_cache = existing(c);
         let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
         if dev(&at_cache).is_some() && dev(&at_cache) == dev(&at_prefix) {
-            needs[0].1 += plan.total_bytes;
+            needs[0].1 += download;
         } else {
-            needs.push((at_cache, plan.total_bytes + MARGIN));
+            needs.push((at_cache, download + MARGIN));
         }
     }
     for (path, need) in needs {
@@ -412,8 +417,8 @@ fn check_space(prefix: &Path, cache: Option<&Path>, plan: &DownloadPlan) -> Resu
                     "disk-space",
                     crate::failure::EX_DISK,
                     format!(
-                        "Not enough free disk space: installing {} needs about {:.1} GB on {}, and {:.1} GB is free. Nothing was changed.",
-                        plan.name, need as f64 / 1e9, path.display(), free as f64 / 1e9
+                        "Not enough free disk space: {what} needs about {:.1} GB on {}, and {:.1} GB is free. Nothing was changed.",
+                        need as f64 / 1e9, path.display(), free as f64 / 1e9
                     ),
                 )
                 .with("prefix_changed", false)
@@ -422,6 +427,11 @@ fn check_space(prefix: &Path, cache: Option<&Path>, plan: &DownloadPlan) -> Resu
         }
     }
     Ok(())
+}
+
+/// Where Mud Hut keeps downloads (`$XDG_CACHE_HOME/mudhut`).
+pub(crate) fn cache_root() -> Option<PathBuf> {
+    xdg_dir("XDG_CACHE_HOME", ".cache").ok().map(|b| b.join("mudhut"))
 }
 
 pub(crate) fn cache_products_dir(plan: &DownloadPlan) -> Result<PathBuf> {

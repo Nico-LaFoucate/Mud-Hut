@@ -32,7 +32,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::failure::{Failure, EX_DEP, EX_DISK, EX_FAIL, EX_NET, EX_ROLLBACK_FAILED, EX_ROLLED_BACK, EX_RUNNING};
+use crate::failure::{Failure, EX_DEP, EX_FAIL, EX_NET, EX_ROLLBACK_FAILED, EX_ROLLED_BACK, EX_RUNNING};
 use crate::feed::{Candidate, DownloadPlan};
 use crate::feedcache::{self, Mode};
 use crate::hdpim::{Expect, Op};
@@ -643,18 +643,13 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Disk: the download (cache) and the unpacked size (prefix), before anything is fetched.
-    let need: u64 = jobs.iter().map(|j| j.download_bytes + j.extract_bytes).sum::<u64>() + (2u64 << 30);
-    if let Some(free) = crate::snapshot::free_bytes(prefix) {
-        if !jobs.is_empty() && free < need {
-            return Err(Failure::new(
-                "disk-space",
-                EX_DISK,
-                format!("Not enough free disk space: the update needs about {:.1} GB, {:.1} GB is free. Nothing was changed.", need as f64 / 1e9, free as f64 / 1e9),
-            )
-            .with("prefix_changed", false)
-            .into());
-        }
+    // Disk: the download in the cache's filesystem and the unpacked size in the prefix's (they can
+    // differ: checking only the prefix's missed a full home holding ~/.cache), before anything is
+    // fetched.
+    if !jobs.is_empty() {
+        let download: u64 = jobs.iter().map(|j| j.download_bytes).sum();
+        let unpacked: u64 = jobs.iter().map(|j| j.extract_bytes).sum();
+        crate::download::require_space(prefix, crate::download::cache_root().as_deref(), download, unpacked, "the update")?;
     }
 
     st.in_progress = Some(state::InProgress {
