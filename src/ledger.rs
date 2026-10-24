@@ -45,6 +45,20 @@ pub struct Ledger {
 /// feed, application manifests, validation lists).
 pub const MUDHUT_USER_AGENT: &str = concat!("MudHut/", env!("CARGO_PKG_VERSION"));
 
+/// Is `url` HTTPS on one of Adobe's own hosts (`adobe.com` or a subdomain)? The remote ledger is
+/// fetched unsigned and picks the product feed, the manifest endpoint and the CDN, and package
+/// hashes come from that manifest. So a remote ledger whose addresses go anywhere else is turned
+/// down for the bundled copy: a tampered or mistaken file cannot redirect a download.
+fn adobe_https(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let host = authority.split(':').next().unwrap_or("").to_ascii_lowercase();
+    host == "adobe.com" || (host.ends_with(".adobe.com") && !host.starts_with('.'))
+}
+
 impl Ledger {
     /// The ledger headers with Mud Hut's own User-Agent. Adobe's CDN is the one endpoint that
     /// refuses it (403 unless the client says it is Adobe's installer), so only the package
@@ -84,6 +98,17 @@ pub struct LedgerApp {
 }
 
 impl Ledger {
+    /// A remote ledger is used only if every endpoint is HTTPS on an Adobe host (`adobe_https`).
+    fn check(&self) -> std::result::Result<(), String> {
+        let e = &self.endpoints;
+        for (name, url) in [("products_feed", &e.products_feed), ("application_manifest", &e.application_manifest), ("cdn_base", &e.cdn_base)] {
+            if !adobe_https(url) {
+                return Err(format!("its {name} is not an Adobe HTTPS address ({url})"));
+            }
+        }
+        Ok(())
+    }
+
     /// Load the ledger: try the remote URL, fall back to the bundled copy. Only
     /// fails if the bundled copy is itself invalid (a build bug). `em` gets a note
     /// about which source was used (and why, on fallback).
@@ -93,10 +118,13 @@ impl Ledger {
 
         match fetch(&url) {
             Ok(body) => match serde_json::from_str::<Ledger>(&body) {
-                Ok(mut l) => {
-                    l.origin = format!("remote:{url}");
-                    return Ok(l);
-                }
+                Ok(mut l) => match l.check() {
+                    Ok(()) => {
+                        l.origin = format!("remote:{url}");
+                        return Ok(l);
+                    }
+                    Err(why) => em.note(&format!("remote ledger rejected: {why}; using bundled fallback")),
+                },
                 Err(e) => em.note(&format!(
                     "remote ledger parse failed ({e}); using bundled fallback"
                 )),
@@ -120,8 +148,10 @@ impl Ledger {
             let agent = crate::net::quick_agent(Duration::from_secs(5), Duration::from_secs(5));
             if let Ok(body) = agent.get(&url).call().map_err(anyhow::Error::from).and_then(|r| Ok(r.into_string()?)) {
                 if let Ok(mut l) = serde_json::from_str::<Ledger>(&body) {
-                    l.origin = format!("remote:{url}");
-                    return Ok(l);
+                    if l.check().is_ok() {
+                        l.origin = format!("remote:{url}");
+                        return Ok(l);
+                    }
                 }
             }
         }
@@ -180,4 +210,30 @@ pub fn cmd_ledger(em: &Emitter) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{adobe_https, Ledger, BUNDLED_LEDGER};
+
+    #[test]
+    fn only_https_on_adobe_hosts() {
+        assert!(adobe_https("https://cdn-ffc.oobesaas.adobe.com/core/v3/applications"));
+        assert!(adobe_https("https://ccmdls.adobe.com"));
+        assert!(adobe_https("https://ccmdls.adobe.com:443/x?y=1"));
+        assert!(!adobe_https("http://ccmdls.adobe.com"), "plain HTTP");
+        assert!(!adobe_https("https://example.com/adobe.com"));
+        assert!(!adobe_https("https://adobe.com.example.net"));
+        assert!(!adobe_https("https://evil-adobe.com"));
+        assert!(!adobe_https("https://ccmdls.adobe.com@example.net/"), "userinfo trick");
+        assert!(!adobe_https("https://example.net?.adobe.com"));
+    }
+
+    #[test]
+    fn the_bundled_ledger_passes_and_a_redirected_one_does_not() {
+        let mut l: Ledger = serde_json::from_str(BUNDLED_LEDGER).unwrap();
+        assert!(l.check().is_ok());
+        l.endpoints.cdn_base = "https://downloads.example.net".into();
+        assert!(l.check().unwrap_err().contains("cdn_base"));
+    }
 }
