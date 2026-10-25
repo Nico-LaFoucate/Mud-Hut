@@ -1,7 +1,7 @@
 {
  "schema": 1,
- "serial": 3,
- "updated": "2026-10-25T12:00:00Z",
+ "serial": 4,
+ "updated": "2026-10-25T20:00:00Z",
  "draft": false,
  "note": "Adobe builds verified on Neutron. Builds not listed here are offered as \"not yet verified\".",
  "default_policy": "hold",
@@ -22,6 +22,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix AE2026 (copied from Windows): Adobe After Effects 2026"
+     },
+     {
+      "build": "26.5.0.89",
+      "build_guid": "be37fb96-a0a6-48ec-ae85-4baac06ef291",
+      "min_runtime": null,
+      "date": "2026-10-25",
+      "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe After Effects 2026"
      }
     ],
     "blocked": []
@@ -36,6 +43,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix AE2026 (copied from Windows): Adobe Media Encoder 2026"
+     },
+     {
+      "build": "26.5.2.2",
+      "build_guid": "50c8a9b4-764b-4984-a386-a0dc5fa9484e",
+      "min_runtime": null,
+      "date": "2026-10-25",
+      "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe Media Encoder 2026"
      }
     ],
     "blocked": []
@@ -50,6 +64,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix AE2026 (copied from Windows): Adobe Animate 2024"
+     },
+     {
+      "build": "24.0.15.5",
+      "build_guid": "1ad495d1-8c68-4cfd-8ff5-7958555c5bf1",
+      "min_runtime": null,
+      "date": "2026-10-25",
+      "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe Animate 2024"
      }
     ],
     "blocked": []
@@ -64,6 +85,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix AE2026 (copied from Windows): Adobe Illustrator 2026"
+     },
+     {
+      "build": "30.8.2.7",
+      "build_guid": "2dd9f7c8-305a-4e54-b585-de0e1a8796fc",
+      "min_runtime": null,
+      "date": "2026-10-25",
+      "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe Illustrator 2026"
      }
     ],
     "blocked": []
@@ -120,6 +148,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix AE2026 (copied from Windows): Adobe Premiere Pro 2026"
+     },
+     {
+      "build": "26.5.2.5",
+      "build_guid": "fa943315-9b7c-4e95-bac2-84e2f9efd196",
+      "min_runtime": null,
+      "date": "2026-10-25",
+      "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe Premiere Pro 2026"
      }
     ],
     "blocked": []
