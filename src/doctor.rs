@@ -64,21 +64,20 @@ pub fn run(em: &Emitter, prefix: Option<&Path>) -> anyhow::Result<()> {
                                    missing.join(", "), tools.display()) } });
     }
 
-    // Vulkan loader (DXVK / vkd3d-proton present via it).
-    let vk = Path::new("/usr/lib/libvulkan.so.1").exists()
-        || Path::new("/usr/lib64/libvulkan.so.1").exists()
-        || which("vulkaninfo").is_some();
+    // Vulkan loader (DXVK / vkd3d-proton present via it). Every distro's 64-bit library folder, as
+    // `neutron doctor` searches them: Debian and Ubuntu keep it in /usr/lib/x86_64-linux-gnu.
+    let vk = has_lib64(Path::new("/"), "libvulkan.so.1") || which("vulkaninfo").is_some();
     checks.push(Check { name: "vulkan", ok: vk, required: true,
         detail: if vk { "Vulkan loader present".into() }
                 else { "no Vulkan loader (libvulkan.so.1 / vulkaninfo)".into() } });
 
-    // 32-bit graphics libs — Adobe ships 32-bit helper processes.
-    let lib32 = Path::new("/usr/lib32").is_dir()
-        || Path::new("/usr/lib/i386-linux-gnu").is_dir()
-        || Path::new("/usr/lib32/libvulkan.so.1").exists();
+    // 32-bit C library: without /lib/ld-linux.so.2 Wine's 32-bit side cannot start and no prefix is
+    // made (Neutron#29; `neutron doctor` checks the same file). Not a 32-bit library FOLDER: Fedora,
+    // Bazzite and Nobara keep 32-bit libraries in /usr/lib.
+    let lib32 = has_lib32_loader(Path::new("/"));
     checks.push(Check { name: "lib32", ok: lib32, required: true,
-        detail: if lib32 { "32-bit library path present".into() }
-                else { "no 32-bit libs (install lib32-* / multilib graphics drivers)".into() } });
+        detail: if lib32 { "32-bit C library present (/lib/ld-linux.so.2)".into() }
+                else { "no 32-bit C library (/lib/ld-linux.so.2): install glibc's 32-bit package (lib32-glibc, glibc.i686 or libc6-i386)".into() } });
 
     // Free disk on the install target (fall back to $HOME).
     let target = prefix
@@ -147,6 +146,27 @@ fn existing_ancestor(p: &Path) -> PathBuf {
 }
 
 /// Free bytes on the filesystem holding `path`, via `df` (avoids an extra crate).
+/// The 64-bit library folders `neutron doctor` searches (its LIB_DIRS), relative to `root`.
+const LIB_DIRS: &[&str] = &["usr/lib64", "usr/lib/x86_64-linux-gnu", "usr/lib", "lib64", "lib/x86_64-linux-gnu", "lib",
+                            "usr/local/lib64", "usr/local/lib"];
+
+/// A 64-bit `name` in one of `LIB_DIRS` (a 32-bit copy in Fedora's /usr/lib does not count).
+fn has_lib64(root: &Path, name: &str) -> bool {
+    LIB_DIRS.iter().any(|d| {
+        let mut head = [0u8; 5];
+        std::fs::File::open(root.join(d).join(name))
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+            .is_ok()
+            && &head[..4] == b"\x7fELF"
+            && head[4] == 2
+    })
+}
+
+/// The 32-bit dynamic loader every glibc distro installs with its 32-bit C library.
+fn has_lib32_loader(root: &Path) -> bool {
+    root.join("lib/ld-linux.so.2").exists()
+}
+
 fn free_bytes(path: &Path) -> Option<u64> {
     let out = Command::new("df")
         .arg("-B1")
@@ -161,4 +181,32 @@ fn free_bytes(path: &Path) -> Option<u64> {
         .lines()
         .last()
         .and_then(|l| l.trim().parse::<u64>().ok())
+}
+
+#[cfg(test)]
+mod lib_tests {
+    use super::{has_lib32_loader, has_lib64};
+    use std::path::Path;
+
+    fn put(root: &Path, rel: &str, bytes: &[u8]) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+
+    #[test]
+    fn libraries_are_found_where_each_distro_keeps_them() {
+        let root = std::env::temp_dir().join(format!("mudhut-libs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // Fedora: no /usr/lib32, the 32-bit loader in /lib, a 32-bit libvulkan in /usr/lib.
+        put(&root, "lib/ld-linux.so.2", b"\x7fELF\x01");
+        put(&root, "usr/lib/libvulkan.so.1", b"\x7fELF\x01");
+        assert!(has_lib32_loader(&root));
+        assert!(!has_lib64(&root, "libvulkan.so.1"), "a 32-bit copy is not the loader DXVK needs");
+        // Ubuntu: the 64-bit loader in /usr/lib/x86_64-linux-gnu.
+        put(&root, "usr/lib/x86_64-linux-gnu/libvulkan.so.1", b"\x7fELF\x02");
+        assert!(has_lib64(&root, "libvulkan.so.1"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!has_lib32_loader(&root));
+    }
 }
