@@ -162,7 +162,14 @@ pub fn classify(procs: &[Proc]) -> Busy {
         {
             continue;
         }
-        if INSTALLERS.contains(&lname.as_str()) || INSTALLERS.contains(&lcomm.as_str()) {
+        // ACCCx 6.11 moved Creative Cloud Helper.exe from the Creative Cloud desktop app (`Adobe
+        // Creative Cloud\ACC`) into Adobe Desktop Common (`Core`), which every Mud Hut prefix has,
+        // and Adobe Desktop Service starts it hidden with every app. There it is a background
+        // helper: as an "installer" it outlived Photoshop and every Mud Hut job then refused,
+        // "Close Creative Cloud Helper.exe first" (lab, 2026-10-24).
+        let desktop_common_helper = lname == "creative cloud helper.exe"
+            && p.win_exe.to_ascii_lowercase().contains("/adobe desktop common/");
+        if !desktop_common_helper && (INSTALLERS.contains(&lname.as_str()) || INSTALLERS.contains(&lcomm.as_str())) {
             push(&mut b.installers, name);
             continue;
         }
@@ -228,6 +235,13 @@ mod tests {
         assert_eq!(b.helpers, vec!["AdobeIPCBroker.exe", "CCXProcess.exe"]);
         assert_eq!(b.other, vec!["plugin-installer.exe"]);
         assert!(b.blocking());
+        // Creative Cloud Helper: a helper in Adobe Desktop Common (ACCCx 6.11+), still the
+        // Creative Cloud desktop app's when it runs from there.
+        let h = classify(&[p(r"C:\Program Files\Common Files\Adobe\Adobe Desktop Common\Core\Creative Cloud Helper.exe", "Creative Cloud ")]);
+        assert_eq!(h.helpers, vec!["Creative Cloud Helper.exe"]);
+        assert!(!h.blocking(), "a hidden helper nobody can close must not hold up a job");
+        let acc = classify(&[p(r"C:\Program Files\Adobe\Adobe Creative Cloud\ACC\Creative Cloud Helper.exe", "Creative Cloud ")]);
+        assert_eq!(acc.installers, vec!["Creative Cloud Helper.exe"]);
         let quiet = classify(&[p(r"C:\windows\system32\services.exe", "services.exe")]);
         assert!(!quiet.blocking() && quiet.any);
     }

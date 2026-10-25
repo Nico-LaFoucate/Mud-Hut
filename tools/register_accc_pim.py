@@ -29,7 +29,8 @@ into <resolved installPath>\pim.db, with the table layout of a pim.db Adobe's in
 copies the `.pimx` to <install dir>\<name>.pimx. Install paths come from extract_accc_runtime.py's TOKEN_MAP,
 so the records describe the files where they actually are (a 64-bit set's in the 64-bit root, as
 on Windows: a reference install keeps CEF64/NGL in C:\Program Files\Common Files\...\pim.db). Idempotent: re-running replaces rows with the same
-values and adds no second journal row.
+values and adds no second journal row. Laid over an older ACCCx, a package's record replaces the older package's
+record for the same name and folder (one record per package), and its .pimx replaces the older one.
 
 Orchestration only, like the extractor: it reads Adobe's manifests and writes the records Adobe's installer
 writes; no Adobe binary is changed. Writes stay inside <prefix>/drive_c.
@@ -41,6 +42,7 @@ Stdlib only.
 
 import argparse
 import datetime
+import filecmp
 import os
 import re
 import shutil
@@ -159,6 +161,16 @@ def main():
                 dbs[base] = db
             db = dbs[base]
             pid = info["packageid"]
+            # A newer ACCCx laid over an older one (Core 6.11 over Core 6.5): the files in this package's
+            # folder are now the new package's, so the old package's records go. A record is keyed by
+            # package id, which changes with every version; the package name and folder do not. Without
+            # this a 6.5 prefix repaired with 6.11 listed every package twice (lab, 2026-10-24).
+            stale = db.execute("SELECT packageid FROM package_installation_info WHERE name = ? AND target_location = ? "
+                               "AND packageid != ?", (info["name"], info["target_location"], pid)).fetchall()
+            for (old_pid,) in stale:
+                for t in ("package_installation_info", "package_upgrade_info", "applet_registration_info",
+                          "applet_relationship_info"):
+                    db.execute(f"DELETE FROM {t} WHERE packageid = ?", (old_pid,))
             db.execute("INSERT OR REPLACE INTO package_installation_info VALUES (?, ?, ?, ?)",
                        (pid, info["version"], info["name"], info["target_location"]))
             for old in info["upgrades"]:
@@ -173,8 +185,9 @@ def main():
             if not db.execute("SELECT 1 FROM journal WHERE pkg_id = ? AND action = 'NewInstall'", (pid,)).fetchone():
                 db.execute("INSERT INTO journal VALUES (?, ?, ?, 'NewInstall', '', 'success', ?, ?)",
                            (info["name"], pid, stamp, info["version"], "{" + str(uuid.uuid4()).upper() + "}"))
+            # The package's own .pimx, replacing an older package's (the one beside the files must match them).
             dest = os.path.join(target, info["name"] + ".pimx")
-            if not os.path.exists(dest):
+            if not os.path.exists(dest) or not filecmp.cmp(pimx, dest, shallow=False):
                 shutil.copyfile(pimx, dest)
     for db in dbs.values():
         db.commit()
