@@ -186,13 +186,20 @@ pub fn classify(procs: &[Proc]) -> Busy {
 
 /// Plain sentence naming what must be closed, e.g. "Close Premiere Pro and After Effects first."
 pub fn close_first_sentence(names: &[String]) -> String {
-    let list = match names.len() {
-        0 => return String::new(),
+    if names.is_empty() {
+        return String::new();
+    }
+    format!("Close {} first.", name_list(names))
+}
+
+/// "A", "A and B", "A, B, and C".
+pub fn name_list(names: &[String]) -> String {
+    match names.len() {
+        0 => String::new(),
         1 => names[0].clone(),
         2 => format!("{} and {}", names[0], names[1]),
         _ => format!("{}, and {}", names[..names.len() - 1].join(", "), names[names.len() - 1]),
-    };
-    format!("Close {list} first.")
+    }
 }
 
 #[cfg(test)]

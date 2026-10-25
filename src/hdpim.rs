@@ -303,6 +303,37 @@ pub fn install(
 /// kill is gone (installer leftovers are closed by `neutron prefix provision`, which leaves a
 /// prefix alone while an app runs); this refusal is the other half, so an install never runs
 /// beside an open app in the first place.
+/// Take the prefix for the part of a job that changes it. The download before it writes only the
+/// cache, so the apps stay usable meanwhile, as with Creative Cloud on Windows; Adobe's installer
+/// needs every Adobe app in the prefix closed. Waits for that, saying which apps it waits for (a
+/// `waiting` progress event, e.g. "Premiere Pro 26.3 is downloaded. Close Photoshop to finish."),
+/// then takes the prefix lock (`neutron launch` refuses from then on) and checks once more under
+/// it, since an app can start between the check and the lock. Emits `prefix_lock` {held: true}.
+pub fn wait_for_prefix(em: &crate::output::Emitter, lock: &mut crate::state::Lock, prefix: &Path, command: &str, ready: &str) -> Result<()> {
+    let mut said = String::new();
+    loop {
+        let busy = crate::busy::scan(prefix);
+        if !busy.blocking() && lock.take_prefix(prefix, command)? {
+            if !crate::busy::scan(prefix).blocking() {
+                em.event(&serde_json::json!({"event": "prefix_lock", "held": true}), "");
+                return Ok(());
+            }
+            lock.release_prefix();
+            continue;
+        }
+        let msg = if busy.blocking() {
+            format!("{ready} Close {} to finish.", crate::busy::name_list(&busy.blocking_names()))
+        } else {
+            "Waiting for an older Mud Hut that is working on this prefix.".to_string()
+        };
+        if msg != said {
+            em.progress("waiting", 100, &msg);
+            said = msg;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
 pub fn refuse_if_busy(prefix: &Path) -> Result<()> {
     let busy = crate::busy::scan(prefix);
     if busy.blocking() {

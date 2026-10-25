@@ -223,12 +223,10 @@ fn check_prefix(
         let mut update = Value::Null;
         if let Some(t) = rec {
             let entry = list.verified(&a.sap, &t.base(), &t.product_version);
+            // Open apps do not block: the update downloads while they run and then waits for them
+            // to close (0.3.6; `apps_running` still names them).
             let blocked_reason: Option<String> = if running.is_some() {
                 Some("An update is already running in this prefix.".into())
-            } else if !busy.apps.is_empty() || !busy.other.is_empty() {
-                let mut names = busy.apps.clone();
-                names.extend(busy.other.iter().cloned());
-                Some(format!("{} Updating needs every Adobe app in this prefix closed.", crate::busy::close_first_sentence(&names)))
             } else if !busy.installers.is_empty() {
                 Some("Adobe's installer is running in this prefix. Wait for it to finish.".into())
             } else if let Some(why) = crate::hdpim::stamp_problem(p) {

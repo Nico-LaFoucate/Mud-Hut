@@ -120,12 +120,10 @@ pub fn install(
         return Ok(());
     }
 
-    // Hold the prefix for the whole install: `neutron launch` refuses and `neutron update`
-    // skips it meanwhile, and a second Mud Hut run waits its turn.
-    let _lock = crate::state::lock(prefix, "install")?;
-    // Refuse before downloading gigabytes into a prefix that is in use (the engine checks again
-    // right before it starts).
-    crate::hdpim::refuse_if_busy(prefix)?;
+    // One Mud Hut job per prefix. The download only writes the cache, so the prefix itself is
+    // taken (and its apps must be closed) only once it is done: the apps stay usable meanwhile.
+    let mut lock = crate::state::job_lock(prefix, "install")?;
+    em.event(&serde_json::json!({"event": "prefix_lock", "held": false}), "");
     check_space(prefix, source.is_none().then_some(products.as_path()), &plan)?;
 
     let roots = stage(em, &ledger, &plan, &raw_manifest, &dep_builds, &products, source.is_some())?;
@@ -133,6 +131,9 @@ pub fn install(
     // Write the DriverInfo beside the packages (EsdDirectory is relative to it), or with
     // absolute paths when a component had to be staged elsewhere.
     let driver_xml = crate::driver::write_driver_xml_roots(&plan, &products, &roots, &crate::driver::Request::default())?;
+
+    let ready = format!("{} {} is downloaded.", cat.name.trim_end_matches(" (experimental)"), crate::version::label(&plan.product_version));
+    crate::hdpim::wait_for_prefix(em, &mut lock, prefix, "install", &ready)?;
 
     // Shared HDPIM tail (same engine `offline` uses).
     hdpim_install_and_provision_opts(em, &cat, &plan, &driver_xml, &products, prefix, "download", dry_run, opts.remove_previous)?;

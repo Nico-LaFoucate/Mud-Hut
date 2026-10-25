@@ -518,8 +518,11 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         }
     }
 
-    let _lock = if o.dry_run { None } else { Some(state::lock(prefix, "update")?) };
+    // One Mud Hut job per prefix; the prefix itself is taken only after the download (see
+    // hdpim::wait_for_prefix), so the apps stay usable while it runs.
+    let mut lock = if o.dry_run { None } else { Some(state::job_lock(prefix, "update")?) };
     if !o.dry_run {
+        em.event(&json!({"event": "prefix_lock", "held": false}), "");
         let log = state::log_path(prefix);
         let _ = std::fs::rename(&log, log.with_extension("log.1"));
         let _ = em.attach_log(&log);
@@ -531,11 +534,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     if which("neutron").is_none() {
         return Err(Failure::new("neutron-missing", EX_DEP, "The `neutron` command was not found. Run `neutron setup`. Nothing was changed.").with("prefix_changed", false).into());
     }
-    em.progress("preflight", 5, "checking what is running in the prefix");
-    let busy = crate::busy::scan(prefix);
-    if busy.blocking() {
-        return Err(busy_failure(&busy, "Updating"));
-    }
+    em.progress("preflight", 5, "checking the prefix");
     let home = std::env::var_os("HOME").map(PathBuf::from).context("HOME is not set")?;
     if let Some(why) = crate::hdpim::stamp_problem(prefix) {
         return Err(Failure::new("runtime-stamp", EX_DEP, format!("{why} Nothing was changed."))
@@ -554,8 +553,12 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
 
     // An update that was cut off (power loss, a killed process) left its snapshot in
     // "pre-update": put it back before anything else.
-    if !o.dry_run {
-        for (dir, mut meta) in crate::snapshot::list(prefix).into_iter().filter(|(_, m)| m.state == "pre-update") {
+    if let Some(l) = lock.as_mut() {
+        let cut: Vec<_> = crate::snapshot::list(prefix).into_iter().filter(|(_, m)| m.state == "pre-update").collect();
+        if !cut.is_empty() && !l.take_prefix(prefix, "update")? {
+            return Err(state::already_running(prefix));
+        }
+        for (dir, mut meta) in cut {
             em.note(&format!("The last update of {} stopped before it finished; putting back how it was first.", name_of(&meta.app)));
             quiesce(em, prefix)?;
             crate::snapshot::restore(prefix, &dir, &mut meta, crate::snapshot::HIVES)?;
@@ -574,6 +577,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
             st.last_update = Some(lu);
             let _ = state::write_state(prefix, &st);
         }
+        l.release_prefix();
     }
 
     // Plan.
@@ -659,6 +663,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         started_at: crate::clock::now(),
         stage: "download".into(),
         log: state::log_path(prefix).display().to_string(),
+        prefix_held: Some(false),
     });
     let _ = state::write_state(prefix, &st);
 
@@ -674,6 +679,16 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
     }
     em.set_app(None);
 
+    // Now the prefix: wait for its apps to close, then hold it until the end.
+    if !ready.is_empty() {
+        let names: Vec<String> = ready.iter().map(|j| format!("{} {}", j.app.name, crate::version::label(&j.target.product_version))).collect();
+        let msg = format!("{} {} downloaded.", crate::busy::name_list(&names), if names.len() == 1 { "is" } else { "are" });
+        set_progress(prefix, &mut st, "waiting");
+        crate::hdpim::wait_for_prefix(em, lock.as_mut().expect("not a dry run"), prefix, "update", &msg)?;
+        if let Some(p) = st.in_progress.as_mut() {
+            p.prefix_held = Some(true);
+        }
+    }
     let cfg = if ready.is_empty() {
         None
     } else {
@@ -929,6 +944,7 @@ pub fn cmd_rollback(em: &Emitter, prefix_s: &str, app: Option<&str>, snapshot: O
         started_at: crate::clock::now(),
         stage: "rollback".into(),
         log: log.display().to_string(),
+        prefix_held: Some(true),
     });
     let _ = state::write_state(prefix, &st);
     em.progress("rollback", 5, &format!("putting back {} {}", name_of(&meta.app), meta.from.clone().unwrap_or_default()));
