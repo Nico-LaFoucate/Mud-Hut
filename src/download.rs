@@ -13,11 +13,11 @@
 //! hashes. We verify each segment as it streams. Idempotent: a file already
 //! present at the expected size is trusted and skipped.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use md5::Md5;
@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 
 use crate::feed::DownloadPlan;
 use crate::ledger::Ledger;
-use crate::output::Emitter;
+use crate::output::{Bytes, Emitter};
 
 /// `install --method download`: install a genuine app into `prefix` via the HDPIM
 /// offline engine (decrypt, no Set-up.exe/WAM/CC-desktop). Without `source`, downloads
@@ -642,17 +642,14 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
     if !(zip.is_file() && md5_of(&zip)? == ACCC_MD5) {
         em.progress("accc", 1, &format!("downloading Adobe's Creative Cloud package {ACCC_VERSION}"));
         let tmp = zip.with_extension("zip.part");
-        let agent = ureq::builder()
-            .timeout_connect(Duration::from_secs(30))
-            .timeout_read(Duration::from_secs(120))
-            .build();
+        let agent = crate::net::download_client();
         crate::net::retry("Creative Cloud package", |m| em.note(m), || {
             let resp = agent.get(ACCC_URL).call().with_context(|| format!("GET {ACCC_URL}"))?;
             let total: u64 = resp.header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
             let mut out = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
             let mut rd = resp.into_reader();
             let mut buf = vec![0u8; 1 << 20];
-            let (mut done, mut last) = (0u64, 0u8);
+            let (mut done, mut meter) = (0u64, Meter::new("accc"));
             loop {
                 let n = rd.read(&mut buf).context("downloading the Creative Cloud package")?;
                 if n == 0 {
@@ -660,12 +657,9 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
                 }
                 out.write_all(&buf[..n])?;
                 done += n as u64;
+                meter.received(n as u64);
                 if total > 0 {
-                    let pct = (done * 100 / total) as u8;
-                    if pct >= last + 5 {
-                        last = pct;
-                        em.progress("accc", pct, &format!("Creative Cloud package {}%", pct));
-                    }
+                    meter.tick(em, done, total, "Creative Cloud package");
                 }
             }
             out.flush()?;
@@ -721,15 +715,15 @@ struct Validation {
 pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
     let cdn = ledger.endpoints.cdn_base.trim_end_matches('/');
-    let agent = ureq::builder()
-        .timeout_connect(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(120))
-        .build();
+    let agent = crate::net::download_client();
+    for n in &agent.notes {
+        em.note(n);
+    }
 
     let total = plan.total_bytes;
     let n = plan.packages.len();
     let mut done = 0u64;
-    let mut last_pct = u8::MAX;
+    let mut meter = Meter::new("download");
 
     for (i, p) in plan.packages.iter().enumerate() {
         // HyperDrive layout: <dest>/<SAP>/<packagefile> (driver.xml EsdDirectory=./SAP).
@@ -743,7 +737,7 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
         if fs::metadata(&out).map(|m| m.len() == p.bytes).unwrap_or(false) {
             done += p.bytes;
             em.note(&format!("[{}/{n}] present, skip — {}", i + 1, p.name));
-            last_pct = emit_pct(em, done, total, &p.name, last_pct);
+            meter.tick(em, done, total, &p.name);
             continue;
         }
 
@@ -759,7 +753,7 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
                     if verify_file(&src, &v).is_ok() && clone_or_copy(&src, &out).is_ok() {
                         done += p.bytes;
                         em.note(&format!("[{}/{n}] reused (verified) from {} — {}", i + 1, src.display(), p.name));
-                        last_pct = emit_pct(em, done, total, &p.name, last_pct);
+                        meter.tick(em, done, total, &p.name);
                         continue;
                     }
                 }
@@ -794,7 +788,7 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
                 // Adobe's CDN serves packages only to its own installer's User-Agent (tested
                 // 2026-10-05: "MudHut/0.2" -> 403), so package downloads keep the ledger's.
                 em, &agent, &url, &ledger.headers, &out, validation.as_ref(), p.bytes,
-                &mut done, total, &mut last_pct,
+                &mut done, total, &mut meter,
             )
         });
         if let Err(e) = res {
@@ -814,7 +808,7 @@ pub fn fetch_packages(em: &Emitter, ledger: &Ledger, plan: &DownloadPlan, dest: 
 
 /// Fetch + parse a package's TYPE2 validation (per-segment SHA-256 list).
 fn fetch_validation(
-    agent: &ureq::Agent,
+    agent: &crate::net::Client,
     headers: &BTreeMap<String, String>,
     base_url: &str,
 ) -> Result<Validation> {
@@ -870,7 +864,7 @@ fn fetch_validation(
 }
 
 /// GET a URL with the Adobe headers, returning the body text (error on non-2xx).
-fn get_text(agent: &ureq::Agent, headers: &BTreeMap<String, String>, url: &str) -> Result<String> {
+fn get_text(agent: &crate::net::Client, headers: &BTreeMap<String, String>, url: &str) -> Result<String> {
     let mut req = agent.get(url);
     for (k, v) in headers {
         req = req.set(k, v);
@@ -886,7 +880,7 @@ fn get_text(agent: &ureq::Agent, headers: &BTreeMap<String, String>, url: &str) 
 #[allow(clippy::too_many_arguments)]
 fn download_one(
     em: &Emitter,
-    agent: &ureq::Agent,
+    agent: &crate::net::Client,
     url: &str,
     headers: &BTreeMap<String, String>,
     out: &Path,
@@ -894,7 +888,7 @@ fn download_one(
     expected: u64,
     done: &mut u64,
     total: u64,
-    last_pct: &mut u8,
+    meter: &mut Meter,
 ) -> Result<()> {
     let tmp = out.with_extension("part");
     let label = out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -951,6 +945,7 @@ fn download_one(
         f.write_all(&buf[..read]).context("writing to disk")?;
         *done += read as u64;
         written += read as u64;
+        meter.received(read as u64);
 
         if let Some(v) = validation {
             // Feed the chunk into the segment hasher, splitting at 2 MiB boundaries.
@@ -968,7 +963,7 @@ fn download_one(
                 }
             }
         }
-        *last_pct = emit_pct(em, *done, total, &label, *last_pct);
+        meter.tick(em, *done, total, &label);
     }
 
     if let Some(v) = validation {
@@ -1102,16 +1097,50 @@ fn check_segment(v: &Validation, idx: usize, got: &str, label: &str) -> Result<(
     Ok(())
 }
 
-fn emit_pct(em: &Emitter, done: u64, total: u64, label: &str, last: u8) -> u8 {
-    let p = if total == 0 {
-        100
-    } else {
-        ((done.min(total) as f64 / total as f64) * 100.0) as u8
-    };
-    if p != last {
-        em.progress("download", p, label);
+/// A download's progress events: the percentage, the bytes, and the speed over the last ~10 s of
+/// bytes actually received (a package reused from disk, or the kept part of a resumed one, counts
+/// as done but not as speed). One event per percent; with `--json` also one a second while bytes
+/// arrive, so a slow connection still shows movement (a terminal gets per-percent lines only).
+pub(crate) struct Meter {
+    stage: &'static str,
+    last_pct: u8,
+    last_emit: Option<Instant>,
+    received: u64,
+    samples: VecDeque<(Instant, u64)>,
+}
+
+const SPEED_WINDOW: Duration = Duration::from_secs(10);
+
+impl Meter {
+    pub(crate) fn new(stage: &'static str) -> Self {
+        Meter { stage, last_pct: u8::MAX, last_emit: None, received: 0, samples: VecDeque::new() }
     }
-    p
+
+    fn received(&mut self, n: u64) {
+        self.received += n;
+    }
+
+    fn per_sec(&mut self, now: Instant) -> Option<u64> {
+        self.samples.push_back((now, self.received));
+        while self.samples.len() > 2 && now.duration_since(self.samples[1].0) >= SPEED_WINDOW {
+            self.samples.pop_front();
+        }
+        let (t0, b0) = *self.samples.front()?;
+        let span = now.duration_since(t0).as_secs_f64();
+        (span >= 1.0).then(|| ((self.received - b0) as f64 / span) as u64)
+    }
+
+    fn tick(&mut self, em: &Emitter, done: u64, total: u64, label: &str) {
+        let pct = if total == 0 { 100 } else { ((done.min(total) as f64 / total as f64) * 100.0) as u8 };
+        let now = Instant::now();
+        let due = em.is_json() && self.last_emit.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+        if pct != self.last_pct || due {
+            let per_sec = self.per_sec(now);
+            em.progress_bytes(self.stage, pct, label, Some(Bytes { done: done.min(total), total, per_sec }));
+            self.last_pct = pct;
+            self.last_emit = Some(now);
+        }
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -1120,6 +1149,29 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod meter_tests {
+    use super::*;
+
+    #[test]
+    fn speed_is_over_the_last_ten_seconds_of_received_bytes() {
+        let at = |s: u64| Instant::now() + Duration::from_secs(s);
+        let t0 = at(0);
+        let mut m = Meter::new("download");
+        assert_eq!(m.per_sec(t0), None, "nothing measured yet");
+        m.received(50_000_000);
+        assert_eq!(m.per_sec(t0 + Duration::from_secs(1)), Some(50_000_000));
+        // Then 20 s at 1 MB/s: the fast first second drops out of the window.
+        let mut last = None;
+        for s in 2..=21 {
+            m.received(1_000_000);
+            last = m.per_sec(t0 + Duration::from_secs(s));
+        }
+        let r = last.unwrap();
+        assert!((900_000..=1_100_000).contains(&r), "{r}");
+    }
 }
 
 #[cfg(test)]
@@ -1245,9 +1297,9 @@ mod resume_tests {
 
     fn run(url: &str, out: &Path, v: Option<&Validation>, expected: u64) -> Result<()> {
         let em = Emitter::new(true);
-        let agent = ureq::AgentBuilder::new().build();
-        let (mut done, mut pct) = (0u64, u8::MAX);
-        download_one(&em, &agent, url, &BTreeMap::new(), out, v, expected, &mut done, 5 << 20, &mut pct)
+        let agent = crate::net::Client::direct();
+        let (mut done, mut meter) = (0u64, Meter::new("download"));
+        download_one(&em, &agent, url, &BTreeMap::new(), out, v, expected, &mut done, 5 << 20, &mut meter)
     }
 
     fn dir(tag: &str) -> PathBuf {

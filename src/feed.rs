@@ -785,7 +785,7 @@ fn http_get_text(
     headers: &BTreeMap<String, String>,
     build_guid: Option<&str>,
 ) -> Result<String> {
-    let mut req = ureq::get(url).timeout(Duration::from_secs(90));
+    let mut req = crate::net::Client::new(|b| b).get(url).timeout(Duration::from_secs(90));
     for (k, v) in headers {
         req = req.set(k, v);
     }

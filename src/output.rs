@@ -64,6 +64,15 @@ macro_rules! errln {
     ($($t:tt)*) => { $crate::output::write_err(format_args!($($t)*)) };
 }
 
+/// The byte counts of a download's progress event.
+#[derive(Debug, Clone, Copy)]
+pub struct Bytes {
+    pub done: u64,
+    pub total: u64,
+    /// Over the last ~10 s of bytes actually received; None until a second has been measured.
+    pub per_sec: Option<u64>,
+}
+
 pub struct Emitter {
     json: bool,
     /// When set, every event is also appended here as one NDJSON line (whatever the mode).
@@ -108,17 +117,34 @@ impl Emitter {
 
     /// A progress tick. `pct` is 0..=100; `stage` is a short machine token.
     pub fn progress(&self, stage: &str, pct: u8, msg: &str) {
+        self.progress_bytes(stage, pct, msg, None);
+    }
+
+    /// A download's progress tick: also `bytes_done`, `bytes_total` and, once measured,
+    /// `bytes_per_sec`, so a GUI can say "1.2 of 3.4 GB, 30 MB/s".
+    pub fn progress_bytes(&self, stage: &str, pct: u8, msg: &str, bytes: Option<Bytes>) {
         let over = self.stage.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let stage = over.as_deref().unwrap_or(stage);
         let mut v = json!({"event":"progress","stage":stage,"pct":pct,"msg":msg});
         if let Some(app) = self.current_app() {
             v["app"] = json!(app);
         }
+        let mut tail = String::new();
+        if let Some(b) = bytes {
+            v["bytes_done"] = json!(b.done);
+            v["bytes_total"] = json!(b.total);
+            tail = format!(" ({:.0} of {:.0} MB", b.done as f64 / 1e6, b.total as f64 / 1e6);
+            if let Some(r) = b.per_sec {
+                v["bytes_per_sec"] = json!(r);
+                tail += &format!(", {:.1} MB/s", r as f64 / 1e6);
+            }
+            tail += ")";
+        }
         self.tee(&v);
         if self.json {
             self.line(&v);
         } else {
-            errln!("[{pct:>3}%] {stage}: {msg}");
+            errln!("[{pct:>3}%] {stage}: {msg}{tail}");
         }
     }
 

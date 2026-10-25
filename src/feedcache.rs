@@ -65,7 +65,7 @@ fn feed_url(ledger: &Ledger, platform: &str) -> String {
         .replace("{platform}", platform)
 }
 
-fn agent() -> ureq::Agent {
+fn agent() -> crate::net::Client {
     crate::net::quick_agent(Duration::from_secs(5), Duration::from_secs(60))
 }
 

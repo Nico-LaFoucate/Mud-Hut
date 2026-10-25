@@ -178,8 +178,8 @@ impl Ledger {
 }
 
 fn fetch(url: &str) -> Result<String> {
-    let body = ureq::get(url)
-        .timeout(Duration::from_secs(15))
+    let body = crate::net::Client::new(|b| b.timeout(Duration::from_secs(15)))
+        .get(url)
         .call()
         .with_context(|| format!("GET {url}"))?
         .into_string()
