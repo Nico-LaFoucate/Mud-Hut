@@ -49,7 +49,7 @@ pub const MUDHUT_USER_AGENT: &str = concat!("MudHut/", env!("CARGO_PKG_VERSION")
 /// fetched unsigned and picks the product feed, the manifest endpoint and the CDN, and package
 /// hashes come from that manifest. So a remote ledger whose addresses go anywhere else is turned
 /// down for the bundled copy: a tampered or mistaken file cannot redirect a download.
-fn adobe_https(url: &str) -> bool {
+pub(crate) fn adobe_https(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     if authority.contains('@') {

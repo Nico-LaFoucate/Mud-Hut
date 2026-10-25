@@ -13,7 +13,8 @@
 //!
 //! Format:
 //! ```json
-//! {"schema":1,"serial":2,"updated":"…","draft":false,"default_policy":"hold",
+//! {"schema":1,"serial":3,"updated":"…","draft":false,"default_policy":"hold",
+//!  "accc":{"version":"6.11.0.478.6","url":"https://ccmdls.adobe.com/…/ACCCx6_11_0_478_6.zip","md5":"…"},
 //!  "apps":{"PHSP":{"27.0":{"verified":[{"build":"27.11.0.26","build_guid":"…","min_runtime":"11.10-130",
 //!                                        "date":"2026-10-16","source":"…"}],
 //!                         "blocked":[{"build":"27.12.0.3","reason":"…","issue":"…"}]}}}}
@@ -52,6 +53,21 @@ pub struct Blocked {
     pub issue: Option<String>,
 }
 
+/// The Creative Cloud package (ACCCx) Mud Hut installs with: Adobe's installer engine and desktop
+/// components. Named here so a newer one, once clean-room tested, reaches every Mud Hut without a
+/// Mud Hut release (his call, 2026-10-25); `download::accc_pin` falls back to the one compiled in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Accc {
+    pub version: String,
+    /// Adobe's own address for the zip (https on *.adobe.com, or it is not used).
+    pub url: String,
+    pub md5: String,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Base {
     #[serde(default)]
@@ -70,6 +86,10 @@ pub struct List {
     pub draft: bool,
     #[serde(default)]
     pub default_policy: String,
+    /// The Creative Cloud package to install with (absent: the one compiled in). A Mud Hut older
+    /// than 0.3.6 ignores this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accc: Option<Accc>,
     /// SAP code -> base version -> builds.
     #[serde(default)]
     pub apps: BTreeMap<String, BTreeMap<String, Base>>,

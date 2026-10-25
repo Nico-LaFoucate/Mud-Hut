@@ -1,10 +1,17 @@
 {
  "schema": 1,
- "serial": 2,
- "updated": "2026-10-17T16:00:00Z",
+ "serial": 3,
+ "updated": "2026-10-25T12:00:00Z",
  "draft": false,
  "note": "Adobe builds verified on Neutron. Builds not listed here are offered as \"not yet verified\".",
  "default_policy": "hold",
+ "accc": {
+  "version": "6.11.0.478.6",
+  "url": "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.11.0/478.6/win64/ACCCx6_11_0_478_6.zip",
+  "md5": "c51197e328b5c2ec4f17bafb495f9c6f",
+  "date": "2026-10-24",
+  "source": "clean room, runtime 150: fresh Photoshop 27.11.0.26 install; a 6.5.0.348 prefix repaired to it; Illustrator 30.6.0.109 -> 30.8.2.7 update"
+ },
  "apps": {
   "AEFT": {
    "26.0": {

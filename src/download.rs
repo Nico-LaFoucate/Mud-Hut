@@ -543,11 +543,62 @@ fn embedded_tools_dir() -> Result<PathBuf> {
 }
 
 /// Adobe's public Creative Cloud package (ACCCx) that seeds HDBox/HDPIM into a prefix. Without
-/// it NO install can run. Pinned like the runtime: a newer build is adopted only after a
-/// clean-room test. Adobe's own download page links these zips; Neutron never redistributes it.
-const ACCC_VERSION: &str = "6.5.0.348";
-const ACCC_URL: &str = "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.5.0/348/win64/ACCCx6_5_0_348.zip";
-const ACCC_MD5: &str = "33a015138f2938690267a54e3a21f63e";
+/// it NO install can run. Adopted only after a clean-room test, like the runtime. Adobe's own
+/// download page links these zips; Neutron never redistributes it.
+///
+/// Which one: the signed verified-builds list names it (`accc`), so a newer package, once
+/// tested, reaches every Mud Hut without a Mud Hut release (his call, 2026-10-25). The pin
+/// compiled in here is used when no list names a usable one. 6.11.0.478.6: clean-room tested
+/// 2026-10-24 (fresh install, a 6.5 prefix repaired to it, an update); 6.5.0.348 before.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AcccPin {
+    pub version: String,
+    pub url: String,
+    pub md5: String,
+}
+
+fn builtin_accc() -> AcccPin {
+    AcccPin {
+        version: "6.11.0.478.6".into(),
+        url: "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.11.0/478.6/win64/ACCCx6_11_0_478_6.zip".into(),
+        md5: "c51197e328b5c2ec4f17bafb495f9c6f".into(),
+    }
+}
+
+/// Why the list's package cannot be used (it then falls back to the compiled-in one), or None.
+/// The version becomes a folder name, and the address must be Adobe's own over https.
+fn unusable(a: &crate::verified::Accc) -> Option<&'static str> {
+    if a.version.is_empty() || !a.version.chars().all(|c| c.is_ascii_digit() || c == '.') || a.version.starts_with('.') {
+        Some("its version is not a version number")
+    } else if !crate::ledger::adobe_https(&a.url) {
+        Some("its address is not Adobe's over https")
+    } else if a.md5.len() != 32 || !a.md5.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some("its checksum is not an md5")
+    } else {
+        None
+    }
+}
+
+/// The package to install with: the signed list's when it names a usable one, else the one
+/// compiled in, and a note when the list's was turned down.
+fn pin_from(listed: Option<&crate::verified::Accc>) -> (AcccPin, Option<String>) {
+    match listed {
+        Some(a) => match unusable(a) {
+            None => (AcccPin { version: a.version.clone(), url: a.url.clone(), md5: a.md5.to_ascii_lowercase() }, None),
+            Some(why) => {
+                let b = builtin_accc();
+                let note = format!("the verified list names Creative Cloud package {}, but {why}; using {}", a.version, b.version);
+                (b, Some(note))
+            }
+        },
+        None => (builtin_accc(), None),
+    }
+}
+
+/// `offline`: read only the cached or bundled list (doctor), never the network.
+pub(crate) fn accc_pin(offline: bool) -> (AcccPin, Option<String>) {
+    pin_from(crate::verified::load(offline).list.accc.as_ref())
+}
 
 pub(crate) fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     xdg_from(std::env::var_os(var), std::env::var_os("HOME"), fallback).with_context(|| format!("no HOME/{var}"))
@@ -583,20 +634,30 @@ pub(crate) fn accc_packages_dir(em: &Emitter) -> Result<PathBuf> {
             }
         }
     }
-    let root = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("neutron/accc").join(ACCC_VERSION);
+    let (pin, note) = accc_pin(false);
+    if let Some(n) = note {
+        em.note(&n);
+    }
+    let root = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("neutron/accc").join(&pin.version);
     let packages = root.join("packages");
-    let marker = root.join(".verified");
-    if packages.is_dir() && marker.is_file() {
+    if packages.is_dir() && marker_matches(&root, &pin) {
         return Ok(packages);
     }
-    fetch_accc(em, &root)?;
+    fetch_accc(em, &root, &pin)?;
     Ok(packages)
+}
+
+/// The `.verified` marker a finished extraction writes: "<version> <md5>".
+fn marker_matches(root: &Path, pin: &AcccPin) -> bool {
+    fs::read_to_string(root.join(".verified"))
+        .map(|s| s.trim().eq_ignore_ascii_case(&format!("{} {}", pin.version, pin.md5)))
+        .unwrap_or(false)
 }
 
 /// `mudhut accc`: make sure the ACCCx packages are present (downloading + verifying if needed).
 pub fn prefetch_accc(em: &Emitter) -> Result<()> {
     let dir = accc_packages_dir(em)?;
-    em.note(&format!("Adobe Creative Cloud package {ACCC_VERSION}: {}", dir.display()));
+    em.note(&format!("Adobe Creative Cloud package: {}", dir.display()));
     Ok(())
 }
 
@@ -612,19 +673,20 @@ pub(crate) fn accc_status() -> String {
             }
         }
     }
+    let (pin, _) = accc_pin(true);
     match xdg_dir("XDG_DATA_HOME", ".local/share") {
-        Ok(d) if d.join("neutron/accc").join(ACCC_VERSION).join(".verified").is_file() =>
-            format!("Adobe Creative Cloud package {ACCC_VERSION} ready"),
-        _ => format!("Adobe Creative Cloud package {ACCC_VERSION} will be downloaded from Adobe on the first install"),
+        Ok(d) if marker_matches(&d.join("neutron/accc").join(&pin.version), &pin) =>
+            format!("Adobe Creative Cloud package {} ready", pin.version),
+        _ => format!("Adobe Creative Cloud package {} will be downloaded from Adobe on the first install", pin.version),
     }
 }
 
 /// Download Adobe's ACCCx zip, verify its MD5 against the pin, and extract `packages/` into
 /// `root`. The zip is cached (`$XDG_CACHE_HOME/neutron/`) until the extraction succeeds.
-fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
+fn fetch_accc(em: &Emitter, root: &Path, pin: &AcccPin) -> Result<()> {
     let cache = xdg_dir("XDG_CACHE_HOME", ".cache")?.join("neutron");
     fs::create_dir_all(&cache).with_context(|| format!("creating {}", cache.display()))?;
-    let zip = cache.join(format!("ACCCx{}.zip", ACCC_VERSION.replace('.', "_")));
+    let zip = cache.join(format!("ACCCx{}.zip", pin.version.replace('.', "_")));
 
     let md5_of = |p: &Path| -> Result<String> {
         let mut f = File::open(p).with_context(|| format!("opening {}", p.display()))?;
@@ -640,12 +702,12 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
         Ok(format!("{:x}", h.finalize()))
     };
 
-    if !(zip.is_file() && md5_of(&zip)? == ACCC_MD5) {
-        em.progress("accc", 1, &format!("downloading Adobe's Creative Cloud package {ACCC_VERSION}"));
+    if !(zip.is_file() && md5_of(&zip)?.eq_ignore_ascii_case(&pin.md5)) {
+        em.progress("accc", 1, &format!("downloading Adobe's Creative Cloud package {}", pin.version));
         let tmp = zip.with_extension("zip.part");
         let agent = crate::net::download_client();
         crate::net::retry("Creative Cloud package", |m| em.note(m), || {
-            let resp = agent.get(ACCC_URL).call().with_context(|| format!("GET {ACCC_URL}"))?;
+            let resp = agent.get(&pin.url).call().with_context(|| format!("GET {}", pin.url))?;
             let total: u64 = resp.header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
             let mut out = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
             let mut rd = resp.into_reader();
@@ -668,13 +730,13 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
         })
         .map_err(|e| anyhow::anyhow!(
             "could not download Adobe's Creative Cloud package ({e:#}).\n\
-             If Adobe has removed version {ACCC_VERSION}, download the Creative Cloud desktop \
+             If Adobe has removed version {}, download the Creative Cloud desktop \
              app's direct-link zip from Adobe and point MUDHUT_ACCC_PACKAGES at its \
-             extracted packages/ folder."))?;
+             extracted packages/ folder.", pin.version))?;
         let got = md5_of(&tmp)?;
-        if got != ACCC_MD5 {
+        if !got.eq_ignore_ascii_case(&pin.md5) {
             let _ = fs::remove_file(&tmp);
-            bail!("the Creative Cloud package from Adobe failed verification (md5 {got}, expected {ACCC_MD5})");
+            bail!("the Creative Cloud package from Adobe failed verification (md5 {got}, expected {})", pin.md5);
         }
         fs::rename(&tmp, &zip)?;
     }
@@ -695,9 +757,9 @@ fn fetch_accc(em: &Emitter, root: &Path) -> Result<()> {
     if !st.success() || !root.join("packages/ApplicationInfo.xml").is_file() {
         bail!("extracting {} failed", zip.display());
     }
-    fs::write(root.join(".verified"), format!("{ACCC_VERSION} {ACCC_MD5}\n"))?;
+    fs::write(root.join(".verified"), format!("{} {}\n", pin.version, pin.md5))?;
     let _ = fs::remove_file(&zip);
-    em.note(&format!("Adobe Creative Cloud package {ACCC_VERSION} ready in {}", root.display()));
+    em.note(&format!("Adobe Creative Cloud package {} ready in {}", pin.version, root.display()));
     Ok(())
 }
 
@@ -1150,6 +1212,49 @@ fn to_hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod accc_pin_tests {
+    use super::*;
+    use crate::verified::Accc;
+
+    fn listed(version: &str, url: &str, md5: &str) -> Accc {
+        Accc { version: version.into(), url: url.into(), md5: md5.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn the_signed_list_names_the_package_and_a_bad_entry_falls_back() {
+        let z = "https://ccmdls.adobe.com/AdobeProducts/StandaloneBuilds/ACCC/ESD/6.12.0/1/win64/ACCCx6_12_0_1.zip";
+        let md5 = "0123456789abcdefABCDEF0123456789";
+        let (p, note) = pin_from(Some(&listed("6.12.0.1", z, md5)));
+        assert_eq!((p.version.as_str(), p.url.as_str(), p.md5.as_str()), ("6.12.0.1", z, "0123456789abcdefabcdef0123456789"));
+        assert!(note.is_none());
+        // Nothing listed (a Mud Hut list from before 0.3.6): the compiled-in package, no note.
+        assert_eq!(pin_from(None), (builtin_accc(), None));
+        // Unusable entries: the compiled-in package, with the reason.
+        for (v, u, m, why) in [
+            ("../../x", z, md5, "version"),
+            ("", z, md5, "version"),
+            ("6.12.0.1", "http://ccmdls.adobe.com/x.zip", md5, "address"),
+            ("6.12.0.1", "https://ccmdls.adobe.com.evil.example/x.zip", md5, "address"),
+            ("6.12.0.1", "https://user@ccmdls.adobe.com/x.zip", md5, "address"),
+            ("6.12.0.1", z, "not-an-md5", "checksum"),
+        ] {
+            let (p, note) = pin_from(Some(&listed(v, u, m)));
+            assert_eq!(p, builtin_accc(), "{v} {u} {m}");
+            assert!(note.as_deref().is_some_and(|n| n.contains(why)), "{note:?}");
+        }
+    }
+
+    #[test]
+    fn the_bundled_list_names_the_compiled_in_package() {
+        // Shipped together: the list a release bundles must name the package its code falls back to,
+        // so both paths install the same one.
+        let l: crate::verified::List = serde_json::from_str(include_str!("../ledger/verified.json")).unwrap();
+        assert!(l.accc.is_some(), "the bundled list must name the package");
+        assert_eq!(pin_from(l.accc.as_ref()), (builtin_accc(), None));
+    }
 }
 
 #[cfg(test)]
