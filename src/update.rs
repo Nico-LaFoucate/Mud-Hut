@@ -345,7 +345,7 @@ fn plan_job(
             "unverified",
             EX_FAIL,
             format!(
-                "Neutron hasn't verified {} {} yet. It may not open, or parts of it may not work. To update anyway, confirm (--allow-unverified).",
+                "{} {} is not yet tested by Neutron. There may be issues we are currently unaware of. To update anyway, confirm (--allow-unverified).",
                 app.name,
                 crate::version::label(&target.product_version)
             ),

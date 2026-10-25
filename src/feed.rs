@@ -396,7 +396,7 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
                 "unverified",
                 crate::failure::EX_FAIL,
                 format!(
-                    "Neutron hasn't verified {} {} yet. It may not open, or parts of it may not work. To install it anyway, confirm (--allow-unverified).",
+                    "{} {} is not yet tested by Neutron. There may be issues we are currently unaware of. To install it anyway, confirm (--allow-unverified).",
                     app.name.trim_end_matches(" (experimental)"),
                     crate::version::label(&newest.product_version)
                 ),
