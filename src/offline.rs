@@ -266,6 +266,8 @@ fn read_manifest(products: &Path, sap: &str, app_id: &str) -> Result<(Manifest, 
         product_version: manifest.product_version.clone(),
         platform,
         build_guid,
+        verified: None,
+        newest: None,
     };
     Ok((manifest, build))
 }

@@ -109,6 +109,7 @@ pub fn install(
             em.result(&serde_json::json!({
                 "ok": true, "dry_run": true, "method": "download", "app": cat.id,
                 "product_version": plan.product_version, "base_version": plan.base_version,
+                "verified": build.verified, "newest": build.newest,
                 "packages": plan.packages.len(), "download_bytes": plan.total_bytes,
                 "modules": plan.modules, "dependencies": dep_saps,
                 "prefix": prefix.display().to_string(),

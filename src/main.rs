@@ -254,8 +254,9 @@ struct InstallArgs {
     #[arg(long)]
     speech_packs: bool,
 
-    /// With --version: allow a build Neutron has not verified yet (after the user confirmed it).
-    /// Without it the newest VERIFIED build of that version is installed.
+    /// Install Adobe's newest build (of --version, if given) even if Neutron has not tested it yet:
+    /// the user's informed choice. Without it the newest TESTED build is installed; a blocked build
+    /// never is.
     #[arg(long)]
     allow_unverified: bool,
 

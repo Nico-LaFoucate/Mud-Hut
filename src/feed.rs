@@ -34,6 +34,12 @@ pub struct Build {
     pub product_version: String,
     pub platform: String,
     pub build_guid: String,
+    /// Whether the build is on Neutron's verified list (None when not looked up: a local package).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    /// Adobe's newest build of the app when it is not this one (what `--allow-unverified` takes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest: Option<String>,
 }
 
 /// The Adobe application manifest (JSON). Only the fields we use are declared;
@@ -259,6 +265,8 @@ impl Candidate {
             product_version: self.product_version.clone(),
             platform: self.platform.clone(),
             build_guid: self.build_guid.clone(),
+            verified: None,
+            newest: None,
         }
     }
 }
@@ -309,9 +317,10 @@ pub(crate) enum Pick<'a> {
 
 /// The build an install takes: the hold policy updates already follow (C70). The newest VERIFIED
 /// build, never a blocked one, so a new yearly version that Neutron has not verified yet is not what
-/// a new user gets. `--allow-unverified` permits an unverified build when no verified one is on
-/// offer. An app with no verified build at all (the experimental ones) keeps Adobe's newest
-/// non-blocked build when no yearly version was chosen, as before. `all` is newest first.
+/// a new user gets by default. `--allow-unverified` is the user's informed choice of Adobe's newest
+/// build (of the chosen yearly version), tested or not, still never a blocked one. An app with no
+/// verified build at all (the experimental ones) keeps Adobe's newest non-blocked build when no
+/// yearly version was chosen, as before. `all` is newest first.
 pub(crate) fn pick_candidate<'a>(
     all: &'a [Candidate],
     list: &crate::verified::List,
@@ -325,10 +334,13 @@ pub(crate) fn pick_candidate<'a>(
         .filter(|c| list.blocked(&c.sap, &c.base(), &c.product_version).is_none())
         .collect();
     let Some(newest) = pool.first().copied() else { return Pick::None };
+    if allow_unverified {
+        return Pick::Build(newest); // the user chose Adobe's newest, tested or not
+    }
     if let Some(v) = pool.iter().find(|c| list.verified(&c.sap, &c.base(), &c.product_version).is_some()) {
         return Pick::Build(v);
     }
-    if allow_unverified || (major.is_none() && !list.covers(sap)) {
+    if major.is_none() && !list.covers(sap) {
         return Pick::Build(newest);
     }
     Pick::Unverified(newest)
@@ -357,13 +369,27 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
     let list = crate::verified::load(false);
     let pick = match pick_candidate(&all, &list.list, &app.sap, major, allow_unverified) {
         Pick::Build(c) => {
-            if let Some(newest) = all.first().filter(|n| n.product_version != c.product_version && major.is_none()) {
+            let verified = list.list.verified(&c.sap, &c.base(), &c.product_version).is_some();
+            let newest = all
+                .iter()
+                .find(|n| list.list.blocked(&n.sap, &n.base(), &n.product_version).is_none())
+                .filter(|n| n.product_version != c.product_version)
+                .map(|n| n.product_version.clone());
+            if !verified {
                 em.note(&format!(
-                    "installing {}, the newest build Neutron has verified; Adobe's newest is {} (not yet verified)",
-                    c.product_version, newest.product_version
+                    "{} {} has not been tested by Neutron yet. It may not open, or parts of it may not work.",
+                    app.name.trim_end_matches(" (experimental)"), c.product_version
+                ));
+            } else if let Some(n) = &newest {
+                em.note(&format!(
+                    "installing {}, the newest build Neutron has tested; Adobe's newest is {n} (not yet tested; --allow-unverified installs it)",
+                    c.product_version
                 ));
             }
-            Some(c.clone())
+            let mut b = c.to_build(app_id);
+            b.verified = Some(verified);
+            b.newest = newest;
+            Some(b)
         }
         Pick::Unverified(newest) => {
             return Err(crate::failure::Failure::new(
@@ -381,13 +407,13 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
         }
         Pick::None => None,
     };
-    let c = match (pick, major) {
-        (Some(c), _) => c,
+    match (pick, major) {
+        (Some(b), _) => Ok(b),
         (None, None) => bail!("app {} ({}) not found in the product feed", app.name, app.sap),
         (None, Some(m)) => {
             let mut majors: Vec<u64> = all.iter().map(|c| crate::version::major(&c.product_version)).collect();
             majors.dedup();
-            return Err(crate::failure::Failure::new(
+            Err(crate::failure::Failure::new(
                 "version-not-offered",
                 crate::failure::EX_FAIL,
                 format!(
@@ -397,10 +423,9 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
                 ),
             )
             .with("prefix_changed", false)
-            .into());
+            .into())
         }
-    };
-    Ok(c.to_build(app_id))
+    }
 }
 
 /// Resolve the downloadable dependency components for `deps` from the product feed.
@@ -808,7 +833,8 @@ mod plan_tests {
 
     fn build() -> Build {
         Build { app_id: "premiere".into(), sap: "PPRO".into(), feed_version: "26.5.2".into(),
-                product_version: "26.5.2.5".into(), platform: "win64".into(), build_guid: "g".into() }
+                product_version: "26.5.2.5".into(), platform: "win64".into(), build_guid: "g".into(),
+                verified: None, newest: None }
     }
 
     #[test]
@@ -879,6 +905,14 @@ mod pick_tests {
     fn a_fresh_install_takes_the_newest_verified_build_not_adobes_newest() {
         let f = feed();
         assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", None, false), Pick::Build(&f[2]));
+    }
+
+    #[test]
+    fn the_user_can_choose_adobes_newest_untested_build() {
+        let f = feed();
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", None, true), Pick::Build(&f[0]), "2027, untested");
+        assert_eq!(pick_candidate(&f, &list(VERIFIED_2026), "PHSP", Some(27), true), Pick::Build(&f[1]),
+                   "the newest 2026 build, untested");
     }
 
     #[test]
