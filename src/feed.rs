@@ -377,7 +377,7 @@ pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major:
                 .map(|n| n.product_version.clone());
             if !verified {
                 em.note(&format!(
-                    "{} {} has not been tested by Neutron yet. It may not open, or parts of it may not work.",
+                    "{} {} is not yet tested by Neutron. There may be issues we are currently unaware of.",
                     app.name.trim_end_matches(" (experimental)"), c.product_version
                 ));
             } else if let Some(n) = &newest {
