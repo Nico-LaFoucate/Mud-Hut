@@ -1093,6 +1093,10 @@ fn wine(cfg: &Config, prefix: &Path, args: &[&str]) -> Command {
         // silently take over a dock pin -- which is how a user's pinned Premiere 2025
         // became 2026 after installing the 2026 suite.
         .env("WINEDLLOVERRIDES", "winemenubuilder.exe=d")
+        // No "The Wine configuration in ... is being updated" window when this run creates or updates
+        // the prefix: Collider and our own progress events say what is happening. Runtime 11.10-152+
+        // honors it (Proton's variable); older runtimes ignore it.
+        .env("WINEBOOT_HIDE_DIALOG", "1")
         .env("WINEDEBUG", "err-all,fixme-all")
         .env("WAYLAND_DISPLAY", std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into()));
     // args may be a placeholder for the hdpim path (see cmd_hdpim); skip empties.
@@ -1298,6 +1302,22 @@ mod tests {
             assert_eq!(find_installed_exe(&prefix, &cat), Some(exe.clone()), "{}", cat.id);
             let _ = std::fs::remove_dir_all(&prefix);
         }
+    }
+}
+
+#[cfg(test)]
+mod wine_env_tests {
+    use super::{wine, Config};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn every_wine_run_hides_wineboots_update_window() {
+        let p = PathBuf::from("/nonexistent");
+        let cfg = Config { wine: p.join("wine"), hdpim_host: p.clone(), extractor: p.clone(),
+                           register: p.clone(), accc_packages: p.clone() };
+        let c = wine(&cfg, Path::new("/tmp/prefix"), &["wineboot", "--init"]);
+        let hide = c.get_envs().find(|(k, _)| *k == "WINEBOOT_HIDE_DIALOG").and_then(|(_, v)| v);
+        assert_eq!(hide.and_then(|v| v.to_str()), Some("1"));
     }
 }
 
