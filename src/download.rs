@@ -124,6 +124,21 @@ pub fn install(
     // taken (and its apps must be closed) only once it is done: the apps stay usable meanwhile.
     let mut lock = crate::state::job_lock(prefix, "install")?;
     em.event(&serde_json::json!({"event": "prefix_lock", "held": false}), "");
+    // Say what is running, as an update does: `neutron launch` names the job from this record while
+    // the prefix is held ("being installed", not "being updated"), and Collider shows it after a restart.
+    let mut st = crate::state::read_state(prefix);
+    st.in_progress = Some(crate::state::InProgress {
+        pid: std::process::id(),
+        command: "install".into(),
+        apps: vec![cat.id.to_string()],
+        started_at: crate::clock::now(),
+        stage: "download".into(),
+        log: String::new(),
+        prefix_held: Some(false),
+        label: Some(cat.name.trim_end_matches(" (experimental)").to_string()),
+    });
+    let _ = crate::state::write_state(prefix, &st);
+    let _clear = ClearInProgress(prefix);
     check_space(prefix, source.is_none().then_some(products.as_path()), &plan)?;
 
     let roots = stage(em, &ledger, &plan, &raw_manifest, &dep_builds, &products, source.is_some())?;
@@ -134,6 +149,12 @@ pub fn install(
 
     let ready = format!("{} {} is downloaded.", cat.name.trim_end_matches(" (experimental)"), crate::version::label(&plan.product_version));
     crate::hdpim::wait_for_prefix(em, &mut lock, prefix, "install", &ready)?;
+    let mut st = crate::state::read_state(prefix);
+    if let Some(p) = st.in_progress.as_mut() {
+        p.stage = "install".into();
+        p.prefix_held = Some(true);
+    }
+    let _ = crate::state::write_state(prefix, &st);
 
     // Shared HDPIM tail (same engine `offline` uses).
     hdpim_install_and_provision_opts(em, &cat, &plan, &driver_xml, &products, prefix, "download", dry_run, opts.remove_previous)?;
@@ -154,6 +175,19 @@ pub fn install(
         }
     }
     Ok(())
+}
+
+/// Clears this process's install record from state.json when the install ends, however it ends.
+struct ClearInProgress<'a>(&'a Path);
+
+impl Drop for ClearInProgress<'_> {
+    fn drop(&mut self) {
+        let mut st = crate::state::read_state(self.0);
+        if st.in_progress.as_ref().is_some_and(|p| p.pid == std::process::id() && p.command == "install") {
+            st.in_progress = None;
+            let _ = crate::state::write_state(self.0, &st);
+        }
+    }
 }
 
 /// Make every component of `plan` present on disk and return where each one is (SAP -> the

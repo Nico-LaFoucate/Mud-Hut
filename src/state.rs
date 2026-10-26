@@ -160,6 +160,10 @@ pub struct InProgress {
     /// older than 0.3.6, which held it for the whole job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix_held: Option<bool>,
+    /// What the job is called in a sentence, when the app is not in the prefix yet (an install):
+    /// "Animate". Absent for updates, whose apps are already listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -217,6 +221,8 @@ pub fn report(prefix: &Path) -> (Option<InProgress>, Option<LastUpdate>) {
     let locked = is_locked(prefix);
     match (&st.in_progress, locked) {
         (Some(p), true) => (Some(p.clone()), st.last_update.clone()),
+        // An install that stopped is not an update to finish: running the install again finishes it.
+        (Some(p), false) if p.command == "install" => (None, st.last_update.clone()),
         (Some(p), false) => (
             None,
             Some(LastUpdate {
@@ -239,6 +245,22 @@ pub fn report(prefix: &Path) -> (Option<InProgress>, Option<LastUpdate>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dead_install_record_is_not_an_incomplete_update() {
+        let p = std::env::temp_dir().join(format!("mudhut-deadinstall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        let st = State {
+            in_progress: Some(InProgress { pid: 1, command: "install".into(), apps: vec!["animate".into()], ..Default::default() }),
+            ..Default::default()
+        };
+        write_state(&p, &st).unwrap();
+        let (running, last) = report(&p);
+        assert!(running.is_none());
+        assert!(last.is_none());
+        let _ = std::fs::remove_dir_all(&p);
+    }
 
     #[test]
     fn lock_is_exclusive_and_visible_and_dies_with_the_holder() {

@@ -664,6 +664,7 @@ pub fn cmd_update(em: &Emitter, o: UpdateOpts) -> Result<()> {
         stage: "download".into(),
         log: state::log_path(prefix).display().to_string(),
         prefix_held: Some(false),
+        label: None,
     });
     let _ = state::write_state(prefix, &st);
 
@@ -945,6 +946,7 @@ pub fn cmd_rollback(em: &Emitter, prefix_s: &str, app: Option<&str>, snapshot: O
         stage: "rollback".into(),
         log: log.display().to_string(),
         prefix_held: Some(true),
+        label: None,
     });
     let _ = state::write_state(prefix, &st);
     em.progress("rollback", 5, &format!("putting back {} {}", name_of(&meta.app), meta.from.clone().unwrap_or_default()));
