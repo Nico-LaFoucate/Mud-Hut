@@ -1,7 +1,7 @@
 {
  "schema": 1,
- "serial": 4,
- "updated": "2026-10-25T20:00:00Z",
+ "serial": 5,
+ "updated": "2026-10-28T20:00:00Z",
  "draft": false,
  "note": "Adobe builds verified on Neutron. Builds not listed here are offered as \"not yet verified\".",
  "default_policy": "hold",
@@ -169,6 +169,34 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix Lightroom (Mud Hut download (HDPIM)): Adobe Lightroom CC, LightroomNew"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "AUDT": {
+   "26.0": {
+    "verified": [
+     {
+      "build": "26.5.0.82",
+      "build_guid": "613a1648-bfbc-43a6-af46-26ca28ed3ae2",
+      "min_runtime": null,
+      "date": "2026-10-28",
+      "source": "clean-room check 2026-10-28, runtime 11.10-158: signed-in copy of the clean-room IlPlug prefix, installed from Adobe by Mud Hut 0.3.8: Adobe Audition 2026"
+     }
+    ],
+    "blocked": []
+   }
+  },
+  "IDSN": {
+   "21.0": {
+    "verified": [
+     {
+      "build": "21.6.0.057",
+      "build_guid": "2565f6f0-00d2-4a81-981d-86ab9115e5d8",
+      "min_runtime": null,
+      "date": "2026-10-28",
+      "source": "clean-room check 2026-10-28, runtime 11.10-158: signed-in copy of the clean-room IlPlug prefix, installed from Adobe by Mud Hut 0.3.8: Adobe InDesign 2026"
      }
     ],
     "blocked": []
