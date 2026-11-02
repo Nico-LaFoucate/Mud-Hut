@@ -54,12 +54,22 @@ pub fn logs_dir(prefix: &Path) -> PathBuf {
 
 /// A Mud Hut job's locks (see the module comment); released when dropped (or when the process ends).
 pub struct Lock {
-    _job: File,
-    prefix: Option<File>,
+    _job: Held,
+    prefix: Option<Held>,
+}
+
+/// A held `flock`, unlocked explicitly: a child being spawned by another thread keeps a copy of
+/// every open file until it execs, so closing ours alone can leave the lock held for that moment.
+struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 /// Take `path` without waiting: None when another process holds it.
-fn try_flock(path: &Path, command: &str) -> Result<Option<File>> {
+fn try_flock(path: &Path, command: &str) -> Result<Option<Held>> {
     let mut f = OpenOptions::new()
         .read(true)
         .write(true)
@@ -72,7 +82,7 @@ fn try_flock(path: &Path, command: &str) -> Result<Option<File>> {
     }
     let _ = f.set_len(0);
     let _ = writeln!(f, "{} {} {}", std::process::id(), command, crate::clock::now());
-    Ok(Some(f))
+    Ok(Some(Held(f)))
 }
 
 pub fn already_running(prefix: &Path) -> anyhow::Error {
@@ -274,19 +284,38 @@ mod tests {
         drop(l);
         assert!(!is_locked(&p));
         // A crashed holder: a child takes the lock and is killed; the kernel releases it.
-        // `-o`: the lock fd is not inherited by `sleep`, so killing flock frees it.
+        // `-F`: flock becomes `sleep`, holding the lock, so the kill leaves nothing behind.
         let mut child = std::process::Command::new("flock")
-            .arg("-o")
+            .arg("-F")
             .arg(lock_path(&p))
             .args(["sleep", "30"])
             .spawn()
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(is_locked(&p));
+        let taken = (0..500).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            is_locked(&p)
+        });
         let _ = child.kill();
         let _ = child.wait();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(taken);
         assert!(!is_locked(&p));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn a_release_frees_the_lock_while_a_spawning_child_still_has_a_copy() {
+        let p = std::env::temp_dir().join(format!("mudhut-copied-{}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        let mut l = lock(&p, "update").unwrap();
+        // What a child holds between fork and exec: the same open file, not a new one.
+        let job_copy = l._job.0.try_clone().unwrap();
+        let prefix_copy = l.prefix.as_ref().unwrap().0.try_clone().unwrap();
+        l.release_prefix();
+        assert!(!prefix_is_locked(&p));
+        assert!(l.take_prefix(&p, "update").unwrap());
+        drop(l);
+        assert!(!is_locked(&p));
+        drop((job_copy, prefix_copy));
         let _ = std::fs::remove_dir_all(&p);
     }
 
@@ -305,16 +334,7 @@ mod tests {
         assert!(!prefix_is_locked(&p));
         assert!(job.take_prefix(&p, "install").unwrap());
         drop(job);
-        // Another test's child process, forked before it execs, can share these descriptors for
-        // a moment (they close on exec), so allow up to a second.
-        let free = (0..50).any(|_| {
-            let f = !is_locked(&p) && !prefix_is_locked(&p);
-            if !f {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            f
-        });
-        assert!(free);
+        assert!(!is_locked(&p));
         let _ = std::fs::remove_dir_all(&p);
     }
 
