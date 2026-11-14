@@ -600,9 +600,15 @@ pub(crate) fn setup_prefix(em: &Emitter, cfg: &Config, prefix: &Path) -> Result<
         ("ProductName", "REG_SZ", "Windows 11 Pro"),
         ("CurrentMajorVersionNumber", "REG_DWORD", "10"),
     ];
-    for (name, ty, data) in regs {
-        wine(cfg, prefix, &["reg", "add", cv, "/v", name, "/t", ty, "/d", data, "/f"])
-            .status_ok("reg add (Win11 spoof)")?;
+    // BOTH registry views. HDPIM runs in our 32-bit host, and a 32-bit process reads HKLM\Software through
+    // Wow6432Node, where wine.inf's Windows 10 values (10.0.19045) stayed: Bridge 2026 (min 10.0.22000) was refused
+    // with HDPIM error 190 "Current OS version 10.0.19045 doesn't satisfy OS requirements" (lab, 2026-11-07). On
+    // Windows 11 both views carry the same build.
+    for view in ["/reg:64", "/reg:32"] {
+        for (name, ty, data) in regs {
+            wine(cfg, prefix, &["reg", "add", cv, "/v", name, "/t", ty, "/d", data, "/f", view])
+                .status_ok("reg add (Win11 spoof)")?;
+        }
     }
     // Remove the HKCU Wine version override (else Wine forces build 22000).
     // ⛔ Output to /dev/null, never inherited: on a fresh prefix the value is absent and `reg`
