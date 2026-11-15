@@ -198,6 +198,11 @@ enum Cmd {
         /// Only packages whose name contains this substring (selective / testing).
         #[arg(long)]
         only: Option<String>,
+        /// Download Adobe's newest build even if Neutron has not tested it yet: the user's informed
+        /// choice, as with `install --allow-unverified`. Without it the newest TESTED build is
+        /// downloaded; a blocked build never is.
+        #[arg(long)]
+        allow_unverified: bool,
     },
 }
 
@@ -327,8 +332,8 @@ fn main() -> ExitCode {
         }
         Cmd::Accc => download::prefetch_accc(&em),
         Cmd::Repair { prefix } => update::cmd_repair(&em, &prefix),
-        Cmd::Download { app, lang, dest, core_only, only } => {
-            feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref())
+        Cmd::Download { app, lang, dest, core_only, only, allow_unverified } => {
+            feed::cmd_download(&em, &app, &lang, dest.as_deref(), core_only, only.as_deref(), allow_unverified)
         }
     };
 
@@ -379,4 +384,23 @@ fn ensure_prefix_dir(prefix: &std::path::Path, dry_run: bool) -> anyhow::Result<
     }
     std::fs::create_dir_all(prefix)
         .with_context(|| format!("creating the prefix directory {}", prefix.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn download_flag(args: &[&str]) -> bool {
+        match Cli::try_parse_from(args).expect("parses").cmd {
+            Cmd::Download { allow_unverified, .. } => allow_unverified,
+            _ => panic!("not the download command"),
+        }
+    }
+
+    #[test]
+    fn download_takes_allow_unverified_like_install() {
+        assert!(download_flag(&["mudhut", "download", "photoshop", "--allow-unverified"]));
+        assert!(!download_flag(&["mudhut", "download", "photoshop"]), "the tested build stays the default");
+        assert!(download_flag(&["mudhut", "--json", "download", "illustrator", "--dest", "/x", "--allow-unverified"]));
+    }
 }

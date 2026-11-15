@@ -40,7 +40,7 @@ mudhut install <app> --method download --prefix <dir> [--dry-run]
 mudhut install <app>  --method windows  --source <C:> --prefix <dir> [--dry-run]
 mudhut install --suite --method windows --source <C:> --prefix <dir>
 
-mudhut download <app> [--dest DIR] [--core-only]   # fetch+verify the app's own packages (not an offline package)
+mudhut download <app> [--dest DIR] [--core-only] [--allow-unverified]   # fetch+verify the app's own packages (not an offline package)
 mudhut accc                                         # fetch+verify Adobe's Creative Cloud package (ACCCx) now
 mudhut repair --prefix <dir>                        # record Adobe's desktop components in a prefix installed before 0.3.5
 mudhut ledger                                       # show the resolved Adobe endpoints/apps

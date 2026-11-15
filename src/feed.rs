@@ -346,11 +346,6 @@ pub(crate) fn pick_candidate<'a>(
     Pick::Unverified(newest)
 }
 
-/// Resolve the latest build for `app_id` from the live product feed.
-pub fn resolve_build(em: &Emitter, ledger: &Ledger, app_id: &str) -> Result<Build> {
-    resolve_build_version(em, ledger, app_id, None, false)
-}
-
 /// Resolve the newest build for `app_id`, or with `major`, the newest build of that major
 /// (`install --version 28` = Photoshop 2027 beside 2026).
 pub fn resolve_build_version(em: &Emitter, ledger: &Ledger, app_id: &str, major: Option<u64>, allow_unverified: bool) -> Result<Build> {
@@ -616,9 +611,10 @@ pub fn cmd_download(
     dest: Option<&Path>,
     core_only: bool,
     only: Option<&str>,
+    allow_unverified: bool,
 ) -> Result<()> {
     let ledger = Ledger::load(em)?;
-    let build = resolve_build(em, &ledger, app_id)?;
+    let build = resolve_build_version(em, &ledger, app_id, None, allow_unverified)?;
     let (manifest, raw) = fetch_manifest(em, &ledger, &build)?;
     let mut plan = plan(&build, &manifest, language);
 
