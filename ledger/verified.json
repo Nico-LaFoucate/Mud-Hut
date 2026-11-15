@@ -1,7 +1,7 @@
 {
  "schema": 1,
- "serial": 5,
- "updated": "2026-10-28T20:00:00Z",
+ "serial": 6,
+ "updated": "2026-11-14T20:00:00Z",
  "draft": false,
  "note": "Adobe builds verified on Neutron. Builds not listed here are offered as \"not yet verified\".",
  "default_policy": "hold",
@@ -32,6 +32,18 @@
      }
     ],
     "blocked": []
+   },
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.0.0.78",
+      "build_guid": "a021f057-0905-47f4-8d4e-c939596ccf18",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut; 7 of 7 starts, a composition with a text layer, preview, Render Queue H.264 export; CLI 1.0.0-beta.42 applies the display setting to the 2027 preferences beside 2026: Adobe After Effects 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "AME": {
@@ -50,6 +62,18 @@
       "min_runtime": null,
       "date": "2026-10-25",
       "source": "clean-room check 2026-10-25, runtime 11.10-150: signed-in copy of the clean-room LrcRelease prefix, build added by Mud Hut: Adobe Media Encoder 2026"
+     }
+    ],
+    "blocked": []
+   },
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.0.0.72",
+      "build_guid": "c1095933-d454-4414-bb2d-43270dd6d113",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut; a clip queued and exported to H.264 on the GPU (CUDA): Adobe Media Encoder 2027"
      }
     ],
     "blocked": []
@@ -74,6 +98,18 @@
      }
     ],
     "blocked": []
+   },
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.0.0.33",
+      "build_guid": "165c01b9-71d7-402c-900e-ef7947591703",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut, started signed in; new document, drawing, frames and playback, Publish Settings, Open: Adobe Animate 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "ILST": {
@@ -95,6 +131,18 @@
      }
     ],
     "blocked": []
+   },
+   "31.0": {
+    "verified": [
+     {
+      "build": "31.0.0.84",
+      "build_guid": "abc27dfc-2f2d-47e4-a3e7-056a7eb4d6d7",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe (needs Mud Hut 0.3.11 or later), started signed in; new documents with GPU Preview on and off, Place, Export for Screens: Adobe Illustrator 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "LTRM": {
@@ -113,6 +161,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix LrcDownload (Mud Hut download (HDPIM)): Adobe Lightroom Classic"
+     },
+     {
+      "build": "16.0.0.202611041403",
+      "build_guid": "ef91e110-ab1b-410d-a1fa-15b16c5debf3",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut, twice through every step (Library, Develop, AI Select Subject, Denoise, export, Edit In, filmstrip), no catalog upgrade asked; Develop also on runtime 11.10-205: Adobe Lightroom Classic"
      }
     ],
     "blocked": []
@@ -137,6 +192,18 @@
      }
     ],
     "blocked": []
+   },
+   "28.0": {
+    "verified": [
+     {
+      "build": "28.0.0.20",
+      "build_guid": "e0064680-4473-4c56-a731-59e846b92d80",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut, started signed in; new document, brush strokes, layers, Gaussian Blur, Camera Raw 19, Preferences, Open and Save As; tip video plays on runtime 11.10-205; also run on his desktop: Adobe Photoshop 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "PPRO": {
@@ -158,6 +225,18 @@
      }
     ],
     "blocked": []
+   },
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.0.0.88",
+      "build_guid": "ea577976-535a-48a1-944f-e4d44ce40bfb",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut; Home, a 2026 project converted and played, Effect Controls, Import, H.264 export on the GPU (CUDA); also started on his desktop: Adobe Premiere Pro 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "LRCC": {
@@ -169,6 +248,13 @@
       "min_runtime": null,
       "date": "2026-10-16",
       "source": "clean-room prefix Lightroom (Mud Hut download (HDPIM)): Adobe Lightroom CC, LightroomNew"
+     },
+     {
+      "build": "10.0.202610291525",
+      "build_guid": "79a81dd3-6c30-452c-8adf-6ad0b6dc984c",
+      "min_runtime": "11.10-206",
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14: installed from Adobe by Mud Hut; starts to its library (Cloud, All Photos, Edit) on runtime 11.10-205, 2 of 2, where 11.10-187 stops at startup 2 of 2; round buttons fixed on 205; on runtime 11.10-200 with the same start fix a local photo opened in Edit, Exposure changed and undone; also run on his desktop: Adobe Lightroom CC"
      }
     ],
     "blocked": []
@@ -186,6 +272,18 @@
      }
     ],
     "blocked": []
+   },
+   "27.0": {
+    "verified": [
+     {
+      "build": "27.0.0.67",
+      "build_guid": "26d38d2c-ce2b-45bf-86ba-b66d9baddb48",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut; a WAV opened and played with level meters, Effects Rack, a multitrack session: Adobe Audition 2027"
+     }
+    ],
+    "blocked": []
    }
   },
   "IDSN": {
@@ -197,6 +295,18 @@
       "min_runtime": null,
       "date": "2026-10-28",
       "source": "clean-room check 2026-10-28, runtime 11.10-158: signed-in copy of the clean-room IlPlug prefix, installed from Adobe by Mud Hut 0.3.8: Adobe InDesign 2026"
+     }
+    ],
+    "blocked": []
+   },
+   "22.0": {
+    "verified": [
+     {
+      "build": "22.0.0.104",
+      "build_guid": "20dde9c0-4610-4018-a0ae-5833a4e91143",
+      "min_runtime": null,
+      "date": "2026-11-14",
+      "source": "2027 suite lab check 2026-11-14, runtime 11.10-200: installed from Adobe by Mud Hut, started signed in; new document, typing, Place, Type > Font, PDF export; the first launch builds InDesign's font cache once: Adobe InDesign 2027"
      }
     ],
     "blocked": []
